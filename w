@@ -1,12 +1,8 @@
-Если вы хотите, чтобы анимация высоты переходила от текущей высоты к новой, вы можете использовать JavaScript для динамического определения высоты элемента и настройки анимации на этот базис. Вот один из способов достижения желаемого эффекта при помощи Angular:
+Извините за недоразумение. Давайте пересмотрим решение, чтобы правильно учесть высоту текущего элемента во время анимации при переключении содержимого. Это требует некоторого управления состоянием и обеспечения анимации, привязанной к высоте текущего содержимого. 
 
-1. Используйте ViewChild для доступа к элементу. Это позволит вам измерять текущую высоту элемента.
+### Шаг 1: Настройка компонента
 
-2. Обновите анимацию с учетом предыдущей высоты.
-
-### Шаг 1: Обновите компонент
-
-В этом примере мы будем использовать ViewChild для получения доступа к элементу, а затем производить расчеты высоты.
+Мы будем использовать ElementRef для измерения высоты содержимого и добавлять логику, чтобы анимация работала именно правильно.
 
 import { Component, ViewChild, ElementRef } from '@angular/core';
 import { trigger, state, style, transition, animate } from '@angular/animations';
@@ -20,8 +16,8 @@ import { trigger, state, style, transition, animate } from '@angular/animations'
       state('void', style({ maxHeight: '0', opacity: 0, overflow: 'hidden' })),
       state('*', style({ opacity: 1, overflow: 'hidden' })),
       transition(':enter', [
-        style({ maxHeight: '0' }),
-        animate('0.5s ease-in', style({ maxHeight: '500px', opacity: 1 }))
+        style({ maxHeight: '0', opacity: 0 }),
+        animate('0.5s ease-in', style({ maxHeight: '1000px', opacity: 1 })) // Используйте максимальную высоту или установите правильное значение
       ]),
       transition(':leave', [
         animate('0.5s ease-out', style({ maxHeight: '0', opacity: 0 }))
@@ -31,17 +27,22 @@ import { trigger, state, style, transition, animate } from '@angular/animations'
 })
 export class YourComponent {
   @ViewChild('banner', { static: true }) banner: ElementRef;
-  
+
   currentBanner: any; // Ваше текущее состояние баннера
   showBanner: boolean = true;
 
-  changeBanner(newBanner: any) {
-    const bannerElement = this.banner.nativeElement;
+  constructor() {
+    this.currentBanner = {}; // Инициализация вашего баннера
+  }
 
-    // Текущая высота
+  changeBanner(newBanner: any) {
+    // Получаем ссылку на элемент
+    const bannerElement = this.banner.nativeElement;
+    
+    // Получаем текущую высоту
     const currentHeight = bannerElement.offsetHeight;
 
-    // Скрыть текущий элемент для измерения его высоты
+    // Скрываем текущий элемент
     this.showBanner = false;
 
     // Ждем завершения анимации
@@ -49,27 +50,25 @@ export class YourComponent {
       this.currentBanner = newBanner;
       this.showBanner = true;
 
-      // Устанавливаем высоту обратно, чтобы была анимация к новой высоте
+      // Правильная анимация на основе текущей высоты
       setTimeout(() => {
-        bannerElement.style.maxHeight = bannerElement.scrollHeight + 'px';
-      }, 50); // Задержка для перерисовки
+        const newHeight = bannerElement.scrollHeight; // Высота нового содержимого
+
+        bannerElement.style.maxHeight = `${newHeight}px`; // Устанавливаем maxHeight
+      }, 50); // Для перерисовки после изменения состояния
     }, 500);  // Это время должно совпадать с длительностью анимации
   }
-
-  // Другие методы вашего компонента
 }
 
 
 ### Шаг 2: Обновите шаблон
 
-Обновите ваш HTML для использования #banner в качестве ссылки на элемент:
+Убедитесь, что вы используете правильные ссылки на элемент в шаблоне:
 
 <app-popup-container (close)="close()">
   <div class="content-wrapper">
-    <div>
-      <div #banner *ngIf="showBanner" @bannerAnimation>
-        <app-banner-components-wrapper [setting]="currentBanner"></app-banner-components-wrapper>
-      </div>
+    <div #banner *ngIf="showBanner" @bannerAnimation>
+      <app-banner-components-wrapper [setting]="currentBanner"></app-banner-components-wrapper>
     </div>
     <div class="icon-wrapper" *ngIf="showIcons()">
       <div *ngIf="isLastBanner()">
@@ -80,14 +79,18 @@ export class YourComponent {
 </app-popup-container>
 
 
-### Пояснения:
+### Пояснение:
 
-1. ViewChild: Используя @ViewChild, мы получаем доступ к DOM-элементу, так что можем измерить его высоту.
+1. Измерение высоты: Используя scrollHeight, мы получаем фактическую высоту нового содержимого, и устанавливаем maxHeight на эту величину. Это важно, так как браузер не известен о содержимом заранее.
 
-2. scrollHeight: Мы измеряем scrollHeight элемента, чтобы получить его фактическую высоту, когда он показывается.
+2. Управление состоянием: Мы используем флаг showBanner для управления показом элемента во время анимации.
 
-3. setTimeout: Теперь у нас есть два таймера, чтобы сделать анимацию плавной:
-   - Первый setTimeout скрывает элемент.
-   - Второй setTimeout (с небольшой задержкой) повторно устанавливает высоту max-height, чтобы анимация складывалась плавно.
+3. Анимация: Мы используем CSS анимации для плавного скрытия и появления содержимого.
 
-Этот метод должен обеспечить более плавный переход высоты, который будет соответствовать предыдущему состоянию, а не жестко устанавливать максимальную высоту. Вы можете дополнительно настраивать максимальную высоту в зависимости от вашего содержимого, если это необходимо.
+### Примечания:
+
+- Убедитесь, что значение maxHeight в анимации не превышает максимальную возможную высоту, чтобы избежать неожиданного поведения.
+  
+- Если вы хотите, чтобы высота была более адаптивной, можно рассмотреть настройки maxHeight в зависимости от фактического контента, чтобы избежать жесткости.
+
+Попробуйте это решение, и если у вас все еще возникают проблемы, дайте знать, и мы найдем способ их устранить!
