@@ -1,12 +1,14 @@
-Чтобы осуществить плавный переход высоты элемента с разным содержимым, вы можете использовать CSS-анимации или использовать Angular Animations с изменением свойств высоты. Однако, поскольку изменения высоты могут привести к сложной реализации анимации, лучше будет воспользоваться подходом с max-height.
+Если вы хотите, чтобы анимация высоты переходила от текущей высоты к новой, вы можете использовать JavaScript для динамического определения высоты элемента и настройки анимации на этот базис. Вот один из способов достижения желаемого эффекта при помощи Angular:
 
-Вот пример того, как можно осуществить плавный переход высоты с помощью Angular Animations:
+1. Используйте ViewChild для доступа к элементу. Это позволит вам измерять текущую высоту элемента.
 
-### Шаг 1: Определение анимации в компоненте
+2. Обновите анимацию с учетом предыдущей высоты.
 
-Необходимо изменить анимацию, чтобы управлять свойством max-height в зависимости от состояния.
+### Шаг 1: Обновите компонент
 
-import { Component } from '@angular/core';
+В этом примере мы будем использовать ViewChild для получения доступа к элементу, а затем производить расчеты высоты.
+
+import { Component, ViewChild, ElementRef } from '@angular/core';
 import { trigger, state, style, transition, animate } from '@angular/animations';
 
 @Component({
@@ -15,49 +17,57 @@ import { trigger, state, style, transition, animate } from '@angular/animations'
   styleUrls: ['./your-component.component.css'],
   animations: [
     trigger('bannerAnimation', [
-      state('void', style({
-        maxHeight: '0',
-        opacity: 0,
-        overflow: 'hidden'
-      })),
-      state('*', style({
-        maxHeight: '500px', // Установите значение, соответствующее максимальной высоте вашего контента
-        opacity: 1,
-        overflow: 'hidden'
-      })),
+      state('void', style({ maxHeight: '0', opacity: 0, overflow: 'hidden' })),
+      state('*', style({ opacity: 1, overflow: 'hidden' })),
       transition(':enter', [
-        animate('0.5s ease-in')
+        style({ maxHeight: '0' }),
+        animate('0.5s ease-in', style({ maxHeight: '500px', opacity: 1 }))
       ]),
       transition(':leave', [
-        animate('0.5s ease-out')
+        animate('0.5s ease-out', style({ maxHeight: '0', opacity: 0 }))
       ])
     ])
   ]
 })
 export class YourComponent {
-  currentBanner: any; // ваше текущее состояние баннера
+  @ViewChild('banner', { static: true }) banner: ElementRef;
+  
+  currentBanner: any; // Ваше текущее состояние баннера
   showBanner: boolean = true;
 
   changeBanner(newBanner: any) {
+    const bannerElement = this.banner.nativeElement;
+
+    // Текущая высота
+    const currentHeight = bannerElement.offsetHeight;
+
+    // Скрыть текущий элемент для измерения его высоты
     this.showBanner = false;
+
+    // Ждем завершения анимации
     setTimeout(() => {
       this.currentBanner = newBanner;
       this.showBanner = true;
-    }, 500); // это время должно совпадать с длительностью анимации
+
+      // Устанавливаем высоту обратно, чтобы была анимация к новой высоте
+      setTimeout(() => {
+        bannerElement.style.maxHeight = bannerElement.scrollHeight + 'px';
+      }, 50); // Задержка для перерисовки
+    }, 500);  // Это время должно совпадать с длительностью анимации
   }
 
-  // другие методы вашего компонента
+  // Другие методы вашего компонента
 }
 
 
-### Шаг 2: Обновите ваш шаблон
+### Шаг 2: Обновите шаблон
 
-В шаблоне используйте директиву *ngIf, чтобы управлять отображением app-banner-components-wrapper с анимацией.
+Обновите ваш HTML для использования #banner в качестве ссылки на элемент:
 
 <app-popup-container (close)="close()">
   <div class="content-wrapper">
     <div>
-      <div *ngIf="showBanner" @bannerAnimation>
+      <div #banner *ngIf="showBanner" @bannerAnimation>
         <app-banner-components-wrapper [setting]="currentBanner"></app-banner-components-wrapper>
       </div>
     </div>
@@ -70,12 +80,14 @@ export class YourComponent {
 </app-popup-container>
 
 
-### Пояснение:
+### Пояснения:
 
-1. @bannerAnimation: Анимация определяет два состояния: void (когда элемент отсутствует) и * (когда элемент видим). Это состояние контролирует max-height, opacity и overflow.
+1. ViewChild: Используя @ViewChild, мы получаем доступ к DOM-элементу, так что можем измерить его высоту.
 
-2. *ngIf="showBanner": Это условие определяет, виден ли элемент. Когда при вызове метода changeBanner устанавливается showBanner = false, элемент сначала исчезает, а затем после задания нового баннера снова отображается.
+2. scrollHeight: Мы измеряем scrollHeight элемента, чтобы получить его фактическую высоту, когда он показывается.
 
-3. maxHeight: Убедитесь, что значение maxHeight (в этом примере 500px) достаточно велике для вашего содержимого. Это значение можно адаптировать в зависимости от вашего дизайна и возможного контента.
+3. setTimeout: Теперь у нас есть два таймера, чтобы сделать анимацию плавной:
+   - Первый setTimeout скрывает элемент.
+   - Второй setTimeout (с небольшой задержкой) повторно устанавливает высоту max-height, чтобы анимация складывалась плавно.
 
-Теперь при изменении содержимого баннера высота будет плавно анимироваться, и изменение не будет резким.
+Этот метод должен обеспечить более плавный переход высоты, который будет соответствовать предыдущему состоянию, а не жестко устанавливать максимальную высоту. Вы можете дополнительно настраивать максимальную высоту в зависимости от вашего содержимого, если это необходимо.
