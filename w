@@ -1,75 +1,33 @@
-Да, этот код можно доработать, чтобы он поддерживал асинхронные вызовы в Entity Framework. Для этого нужно добавить поддержку интерфейсов `IDbAsyncEnumerable` и асинхронного провайдера запросов для мок-объекта `DbSet<T>`. Это позволит использовать такие методы, как `ToListAsync()`, `FirstOrDefaultAsync()`, и другие асинхронные операции.
+Интерфейс `IAsyncQueryProvider` сам по себе не является частью стандартной библиотеки .NET или Entity Framework. Этот интерфейс можно встретить в **Entity Framework Core**, где асинхронные запросы поддерживаются через его асинхронные методы, такие как `ExecuteAsync`.
 
-### Как доработать код:
+В классическом Entity Framework (до версии Core) такой интерфейс не существует. Если вы работаете с **EF 6.x (классической версией)**, вам нужно реализовать этот интерфейс самостоятельно или использовать расширения, которые обеспечивают поддержку асинхронности для тестирования. Ниже описан подход для реализации и поддержки асинхронных запросов в **Entity Framework 6.x**.
 
-1. Реализуйте асинхронный `IQueryable` и `IDbAsyncEnumerable`, используя вспомогательные классы для мокирования асинхронных методов.
-2. Добавьте их в ваш мок-объект `DbSet<T>`.
+Вам нужно добавить реализацию интерфейса самостоятельно, если он отсутствует в вашем проекте, или вы можете использовать следующий подход для EF6.
 
-Вот как может выглядеть доработанный метод `GetMoc` для поддержки асинхронных операций:
+### Реализация интерфейса `IAsyncQueryProvider`:
 
 ```csharp
-private static Mock<DbSet<T>> GetMoc<T>(string testName) where T : class
+using System.Linq.Expressions;
+using System.Threading;
+using System.Threading.Tasks;
+
+public interface IAsyncQueryProvider : IQueryProvider
 {
-    string filesFileName = $@"DataForTest\{testName}\{typeof(T).Name}.json";
-    string filesJsonString = File.ReadAllText(filesFileName, Encoding.UTF8);
-    var dbo_doc_files = JsonConvert.DeserializeObject<List<T>>(filesJsonString).AsQueryable();
-
-    var custom_mockSet = new Mock<DbSet<T>>();
-
-    // Настройка синхронного IQueryable
-    custom_mockSet.As<IQueryable<T>>().Setup(m => m.Provider).Returns(dbo_doc_files.Provider);
-    custom_mockSet.As<IQueryable<T>>().Setup(m => m.Expression).Returns(dbo_doc_files.Expression);
-    custom_mockSet.As<IQueryable<T>>().Setup(m => m.ElementType).Returns(dbo_doc_files.ElementType);
-    custom_mockSet.As<IQueryable<T>>().Setup(m => m.GetEnumerator()).Returns(() => dbo_doc_files.GetEnumerator());
-
-    // Настройка асинхронного IQueryable и провайдера
-    custom_mockSet.As<IAsyncEnumerable<T>>()
-        .Setup(m => m.GetAsyncEnumerator(It.IsAny<CancellationToken>()))
-        .Returns(new TestAsyncEnumerator<T>(dbo_doc_files.GetEnumerator()));
-
-    custom_mockSet.As<IQueryable<T>>()
-        .Setup(m => m.Provider)
-        .Returns(new TestAsyncQueryProvider<T>(dbo_doc_files.Provider));
-
-    return custom_mockSet;
+    Task<TResult> ExecuteAsync<TResult>(Expression expression, CancellationToken cancellationToken);
 }
 ```
 
-### Вспомогательные классы для асинхронной поддержки:
+### Для **Entity Framework 6** вам нужно сделать несколько ключевых изменений:
 
-Для корректной работы асинхронных методов в тестах необходимо добавить два вспомогательных класса: `TestAsyncEnumerator<T>` и `TestAsyncQueryProvider<T>`. Эти классы будут отвечать за обработку асинхронных запросов.
+1. Включить поддержку `IDbAsyncEnumerable` для асинхронных операций с `IQueryable`.
+2. Добавить реализацию `IAsyncQueryProvider` и провайдера для асинхронных операций.
 
-#### 1. Класс `TestAsyncEnumerator<T>`:
+### Реализация для EF6 (полная версия с поддержкой асинхронных методов):
 
-```csharp
-public class TestAsyncEnumerator<T> : IAsyncEnumerator<T>
-{
-    private readonly IEnumerator<T> _inner;
-
-    public TestAsyncEnumerator(IEnumerator<T> inner)
-    {
-        _inner = inner;
-    }
-
-    public ValueTask DisposeAsync()
-    {
-        _inner.Dispose();
-        return ValueTask.CompletedTask;
-    }
-
-    public ValueTask<bool> MoveNextAsync()
-    {
-        return new ValueTask<bool>(_inner.MoveNext());
-    }
-
-    public T Current => _inner.Current;
-}
-```
-
-#### 2. Класс `TestAsyncQueryProvider<T>`:
+#### 1. Класс `TestAsyncQueryProvider<T>`:
 
 ```csharp
-public class TestAsyncQueryProvider<TEntity> : IAsyncQueryProvider
+public class TestAsyncQueryProvider<TEntity> : IQueryProvider, IAsyncQueryProvider
 {
     private readonly IQueryProvider _inner;
 
@@ -98,11 +56,7 @@ public class TestAsyncQueryProvider<TEntity> : IAsyncQueryProvider
         return _inner.Execute<TResult>(expression);
     }
 
-    public IAsyncEnumerable<TResult> ExecuteAsync<TResult>(Expression expression)
-    {
-        return new TestAsyncEnumerable<TResult>(expression);
-    }
-
+    // Реализация асинхронного выполнения запроса
     public Task<TResult> ExecuteAsync<TResult>(Expression expression, CancellationToken cancellationToken)
     {
         return Task.FromResult(_inner.Execute<TResult>(expression));
@@ -110,10 +64,10 @@ public class TestAsyncQueryProvider<TEntity> : IAsyncQueryProvider
 }
 ```
 
-#### 3. Класс `TestAsyncEnumerable<T>`:
+#### 2. Класс `TestAsyncEnumerable<T>`:
 
 ```csharp
-public class TestAsyncEnumerable<T> : EnumerableQuery<T>, IAsyncEnumerable<T>, IQueryable<T>
+public class TestAsyncEnumerable<T> : EnumerableQuery<T>, IDbAsyncEnumerable<T>, IQueryable<T>
 {
     public TestAsyncEnumerable(IEnumerable<T> enumerable) : base(enumerable)
     {
@@ -123,25 +77,82 @@ public class TestAsyncEnumerable<T> : EnumerableQuery<T>, IAsyncEnumerable<T>, I
     {
     }
 
-    public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+    public IDbAsyncEnumerator<T> GetAsyncEnumerator()
     {
-        return new TestAsyncEnumerator<T>(this.AsEnumerable().GetEnumerator());
+        return new TestDbAsyncEnumerator<T>(this.AsEnumerable().GetEnumerator());
     }
 
     IQueryProvider IQueryable.Provider => new TestAsyncQueryProvider<T>(this);
+
+    IDbAsyncEnumerator IDbAsyncEnumerable.GetAsyncEnumerator()
+    {
+        return GetAsyncEnumerator();
+    }
 }
 ```
 
-### Объяснение:
+#### 3. Класс `TestDbAsyncEnumerator<T>`:
 
-1. **`TestAsyncEnumerator<T>`**: Этот класс реализует интерфейс `IAsyncEnumerator<T>`, который необходим для поддержки асинхронного перечисления в `IAsyncEnumerable`. Он просто оборачивает синхронный `IEnumerator<T>`.
+```csharp
+public class TestDbAsyncEnumerator<T> : IDbAsyncEnumerator<T>
+{
+    private readonly IEnumerator<T> _inner;
 
-2. **`TestAsyncQueryProvider<T>`**: Этот класс реализует интерфейс `IAsyncQueryProvider`, который используется Entity Framework для выполнения асинхронных запросов. Он оборачивает обычный `IQueryProvider` и предоставляет методы для выполнения асинхронных операций.
+    public TestDbAsyncEnumerator(IEnumerator<T> inner)
+    {
+        _inner = inner;
+    }
 
-3. **`TestAsyncEnumerable<T>`**: Этот класс позволяет выполнять запросы, как синхронные, так и асинхронные, предоставляя `IQueryable<T>` и `IAsyncEnumerable<T>`.
+    public Task<bool> MoveNextAsync(CancellationToken cancellationToken)
+    {
+        return Task.FromResult(_inner.MoveNext());
+    }
 
-### Заключение:
+    public T Current => _inner.Current;
 
-С этими изменениями ваш мок-объект `DbSet<T>` будет поддерживать асинхронные методы, такие как `ToListAsync`, `FirstOrDefaultAsync`, и другие. Это позволит вашим тестам корректно работать с асинхронными операциями в Entity Framework, даже если данные загружаются из JSON-файлов или других тестовых источников.
+    object IDbAsyncEnumerator.Current => Current;
 
-Если у вас есть вопросы по адаптации этого решения или возникают проблемы, дайте знать!
+    public void Dispose()
+    {
+        _inner.Dispose();
+    }
+}
+```
+
+### Использование
+
+Теперь вы можете использовать этот код для создания моков `DbSet<T>`, которые поддерживают асинхронные операции, такие как `ToListAsync()`, в вашем тестовом коде.
+
+Пример использования для вашего метода `GetMoc`:
+
+```csharp
+private static Mock<DbSet<T>> GetMoc<T>(string testName) where T : class
+{
+    string filesFileName = $@"DataForTest\{testName}\{typeof(T).Name}.json";
+    string filesJsonString = File.ReadAllText(filesFileName, Encoding.UTF8);
+    var dbo_doc_files = JsonConvert.DeserializeObject<List<T>>(filesJsonString).AsQueryable();
+
+    var custom_mockSet = new Mock<DbSet<T>>();
+
+    // Настройка синхронного IQueryable
+    custom_mockSet.As<IQueryable<T>>().Setup(m => m.Provider).Returns(dbo_doc_files.Provider);
+    custom_mockSet.As<IQueryable<T>>().Setup(m => m.Expression).Returns(dbo_doc_files.Expression);
+    custom_mockSet.As<IQueryable<T>>().Setup(m => m.ElementType).Returns(dbo_doc_files.ElementType);
+    custom_mockSet.As<IQueryable<T>>().Setup(m => m.GetEnumerator()).Returns(() => dbo_doc_files.GetEnumerator());
+
+    // Настройка асинхронного IQueryable и провайдера
+    custom_mockSet.As<IDbAsyncEnumerable<T>>()
+        .Setup(m => m.GetAsyncEnumerator())
+        .Returns(new TestDbAsyncEnumerator<T>(dbo_doc_files.GetEnumerator()));
+
+    custom_mockSet.As<IQueryable<T>>()
+        .Setup(m => m.Provider)
+        .Returns(new TestAsyncQueryProvider<T>(dbo_doc_files.Provider));
+
+    return custom_mockSet;
+}
+```
+
+### Заключение
+
+Интерфейс `IAsyncQueryProvider` не входит в стандартный Entity Framework 6, и поэтому вам необходимо самостоятельно его реализовать, как показано выше. С этим кодом ваш мок `DbSet<T>` будет поддерживать асинхронные методы, такие как `ToListAsync` и `FirstOrDefaultAsync`, что позволит вам корректно тестировать асинхронные операции в Entity Framework 6.
