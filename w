@@ -1,165 +1,174 @@
-Конечно! Если вы используете **обычный Entity Framework** (EF 6.x), вам нужно будет самостоятельно реализовать поддержку асинхронных операций для вашего мок-объекта `DbSet<T>`. Ниже приведен пример, который включает необходимые классы для поддержки асинхронных запросов, таких как `ToListAsync`, `FirstOrDefaultAsync` и т.д.
+Если ваше хранилище S3 располагается по адресу `s3.data.rus` и использует нестандартный порт (433), и при этом бакет может не существовать (требуется его создание), вам необходимо адаптировать код для работы с нестандартной конфигурацией, поскольку по умолчанию AWS SDK взаимодействует с сервисом Amazon S3 в стандартных регионах и на стандартных портах.
 
-### Полная реализация
+Для работы с кастомными S3 совместимыми сервисами, такими как `s3.data.rus`, можно использовать следующие параметры конфигурации в AWS SDK:
 
-1. **Реализация интерфейса `IDbAsyncEnumerable<T>`**.
-2. **Реализация интерфейса `IDbAsyncEnumerator<T>`**.
-3. **Создание мок-объекта `DbSet<T>`**.
+### Изменение кода для работы с кастомным S3
 
-Вот как это будет выглядеть:
+1. **Использование нестандартного эндпоинта и порта:** Нужно указать кастомный URL и порт для S3-сервера.
+2. **Создание бакета:** Добавим проверку на существование бакета и создание его, если он отсутствует.
 
-### 1. Реализация интерфейса `IDbAsyncEnumerable<T>`
-
-```csharp
-using System.Collections;
-using System.Collections.Generic;
-using System.Data.Entity.Infrastructure;
-using System.Linq;
-using System.Linq.Expressions;
-
-public class TestDbAsyncEnumerable<T> : EnumerableQuery<T>, IDbAsyncEnumerable<T>, IQueryable<T>
-{
-    public TestDbAsyncEnumerable(IEnumerable<T> enumerable) : base(enumerable)
-    {
-    }
-
-    public TestDbAsyncEnumerable(Expression expression) : base(expression)
-    {
-    }
-
-    public IDbAsyncEnumerator<T> GetAsyncEnumerator()
-    {
-        return new TestDbAsyncEnumerator<T>(this.AsEnumerable().GetEnumerator());
-    }
-
-    IQueryProvider IQueryable.Provider => new TestAsyncQueryProvider<T>(this);
-}
-```
-
-### 2. Реализация интерфейса `IDbAsyncEnumerator<T>`
+Вот адаптированный код:
 
 ```csharp
-using System.Data.Entity.Infrastructure;
-using System.Threading.Tasks;
-
-public class TestDbAsyncEnumerator<T> : IDbAsyncEnumerator<T>
-{
-    private readonly IEnumerator<T> _inner;
-
-    public TestDbAsyncEnumerator(IEnumerator<T> inner)
-    {
-        _inner = inner;
-    }
-
-    public Task<bool> MoveNextAsync(System.Threading.CancellationToken cancellationToken)
-    {
-        return Task.FromResult(_inner.MoveNext());
-    }
-
-    public T Current => _inner.Current;
-
-    object IDbAsyncEnumerator.Current => Current;
-
-    public void Dispose()
-    {
-        _inner.Dispose();
-    }
-}
-```
-
-### 3. Реализация `IAsyncQueryProvider`
-
-```csharp
-using System.Linq;
-using System.Linq.Expressions;
-using System.Threading;
-using System.Threading.Tasks;
-
-public class TestAsyncQueryProvider<T> : IQueryProvider
-{
-    private readonly IQueryProvider _inner;
-
-    public TestAsyncQueryProvider(IQueryProvider inner)
-    {
-        _inner = inner;
-    }
-
-    public IQueryable CreateQuery(Expression expression)
-    {
-        return new TestDbAsyncEnumerable<T>(expression);
-    }
-
-    public IQueryable<TElement> CreateQuery<TElement>(Expression expression)
-    {
-        return new TestDbAsyncEnumerable<TElement>(expression);
-    }
-
-    public object Execute(Expression expression)
-    {
-        return _inner.Execute(expression);
-    }
-
-    public TResult Execute<TResult>(Expression expression)
-    {
-        return _inner.Execute<TResult>(expression);
-    }
-
-    public Task<TResult> ExecuteAsync<TResult>(Expression expression, CancellationToken cancellationToken)
-    {
-        return Task.FromResult(_inner.Execute<TResult>(expression));
-    }
-}
-```
-
-### 4. Метод для создания мок-объекта `DbSet<T>`
-
-Теперь, когда у нас есть реализация для поддержки асинхронных запросов, мы можем создать метод `GetMockSet<T>` для создания мок-объекта `DbSet<T>`.
-
-```csharp
-using Moq;
-using Newtonsoft.Json;
-using System.Collections.Generic;
+using Amazon;
+using Amazon.S3;
+using Amazon.S3.Model;
+using Amazon.S3.Util;
+using Amazon.Runtime;
+using System;
 using System.IO;
-using System.Linq;
-using System.Text;
+using System.Threading.Tasks;
 
-public static Mock<DbSet<T>> GetMockSet<T>(string testName) where T : class
+class S3FileManager
 {
-    string filesFileName = $@"DataForTest\{testName}\{typeof(T).Name}.json";
-    string filesJsonString = File.ReadAllText(filesFileName, Encoding.UTF8);
-    var dbo_doc_files = JsonConvert.DeserializeObject<List<T>>(filesJsonString).AsQueryable();
+    private static string accessKey = "YOUR_ACCESS_KEY";  // Замените на ваш Access Key
+    private static string secretKey = "YOUR_SECRET_KEY";  // Замените на ваш Secret Key
+    private static string bucketName = "your-bucket-name";  // Имя S3 бакета
+    private static string serviceUrl = "https://s3.data.rus:433";  // Ваш кастомный адрес S3
+    private static RegionEndpoint bucketRegion = RegionEndpoint.USEast1;  // Укажите регион (или выберите нейтральный)
+    private static IAmazonS3 s3Client;
 
-    var mockSet = new Mock<DbSet<T>>();
+    public static async Task Main(string[] args)
+    {
+        // Создание конфигурации для работы с кастомным S3
+        var config = new AmazonS3Config
+        {
+            ServiceURL = serviceUrl,  // Указание URL кастомного сервиса
+            ForcePathStyle = true,    // Необходимо для кастомных S3 сервисов
+            SignatureVersion = "v4"   // Использование версии подписи для аутентификации
+        };
 
-    // Настройка синхронного IQueryable
-    mockSet.As<IQueryable<T>>().Setup(m => m.Provider).Returns(dbo_doc_files.Provider);
-    mockSet.As<IQueryable<T>>().Setup(m => m.Expression).Returns(dbo_doc_files.Expression);
-    mockSet.As<IQueryable<T>>().Setup(m => m.ElementType).Returns(dbo_doc_files.ElementType);
-    mockSet.As<IQueryable<T>>().Setup(m => m.GetEnumerator()).Returns(() => dbo_doc_files.GetEnumerator());
+        // Инициализация S3 клиента с указанием настроек кастомного сервиса
+        s3Client = new AmazonS3Client(accessKey, secretKey, config);
 
-    // Настройка асинхронного IQueryable и провайдера
-    mockSet.As<IDbAsyncEnumerable<T>>()
-        .Setup(m => m.GetAsyncEnumerator())
-        .Returns(new TestDbAsyncEnumerator<T>(dbo_doc_files.GetEnumerator()));
+        // Проверяем наличие бакета и создаем его, если отсутствует
+        await CreateBucketIfNotExistsAsync(bucketName);
 
-    mockSet.As<IQueryable<T>>()
-        .Setup(m => m.Provider)
-        .Returns(new TestAsyncQueryProvider<T>(dbo_doc_files.Provider));
+        string localFilePath = @"C:\path\to\your\file.txt";  // Локальный путь к файлу
+        string s3FileName = "uploaded-file.txt";  // Имя файла в S3
 
-    return mockSet;
+        // Загрузка файла в S3
+        await UploadFileAsync(localFilePath, s3FileName);
+
+        // Чтение файла из S3
+        await DownloadFileAsync(s3FileName, @"C:\path\to\download\file.txt");
+
+        // Удаление файла из S3
+        await DeleteFileAsync(s3FileName);
+    }
+
+    // Метод для проверки и создания бакета, если он отсутствует
+    private static async Task CreateBucketIfNotExistsAsync(string bucketName)
+    {
+        try
+        {
+            if (!(await AmazonS3Util.DoesS3BucketExistV2Async(s3Client, bucketName)))
+            {
+                var putBucketRequest = new PutBucketRequest
+                {
+                    BucketName = bucketName
+                };
+                await s3Client.PutBucketAsync(putBucketRequest);
+                Console.WriteLine($"Бакет {bucketName} был создан.");
+            }
+            else
+            {
+                Console.WriteLine($"Бакет {bucketName} уже существует.");
+            }
+        }
+        catch (AmazonS3Exception e)
+        {
+            Console.WriteLine($"Ошибка S3: {e.Message}");
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"Ошибка: {e.Message}");
+        }
+    }
+
+    // Метод для загрузки файла в S3
+    private static async Task UploadFileAsync(string filePath, string fileName)
+    {
+        try
+        {
+            var putRequest = new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = fileName,
+                FilePath = filePath
+            };
+            var response = await s3Client.PutObjectAsync(putRequest);
+            Console.WriteLine("Загрузка файла завершена.");
+        }
+        catch (AmazonS3Exception e)
+        {
+            Console.WriteLine("Ошибка S3: " + e.Message);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine("Ошибка: " + e.Message);
+        }
+    }
+
+    // Метод для чтения файла из S3
+    private static async Task DownloadFileAsync(string fileName, string outputPath)
+    {
+        try
+        {
+            var getRequest = new GetObjectRequest
+            {
+                BucketName = bucketName,
+                Key = fileName
+            };
+            using (GetObjectResponse response = await s3Client.GetObjectAsync(getRequest))
+            {
+                await response.WriteResponseStreamToFileAsync(outputPath, false, default);
+                Console.WriteLine("Файл загружен из S3.");
+            }
+        }
+        catch (AmazonS3Exception e)
+        {
+            Console.WriteLine("Ошибка S3: " + e.Message);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine("Ошибка: " + e.Message);
+        }
+    }
+
+    // Метод для удаления файла из S3
+    private static async Task DeleteFileAsync(string fileName)
+    {
+        try
+        {
+            var deleteRequest = new DeleteObjectRequest
+            {
+                BucketName = bucketName,
+                Key = fileName
+            };
+            var response = await s3Client.DeleteObjectAsync(deleteRequest);
+            Console.WriteLine("Файл удален из S3.");
+        }
+        catch (AmazonS3Exception e)
+        {
+            Console.WriteLine("Ошибка S3: " + e.Message);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine("Ошибка: " + e.Message);
+        }
+    }
 }
 ```
 
-### Как это использовать:
+### Описание изменений:
+1. **Конфигурация `AmazonS3Config`:** 
+   - Параметр `ServiceURL` задает URL-адрес вашего S3-совместимого сервиса, включая порт `433`.
+   - Параметр `ForcePathStyle` нужен для правильной работы с кастомными сервисами, где путь к объектам может отличаться от стандартного формата.
+   
+2. **Проверка и создание бакета:** Метод `CreateBucketIfNotExistsAsync` проверяет наличие бакета и создает его, если он отсутствует. Используется метод `AmazonS3Util.DoesS3BucketExistV2Async`.
 
-Теперь, используя метод `GetMockSet<T>`, вы можете создавать мок-объекты `DbSet<T>`, которые поддерживают асинхронные операции:
-
-```csharp
-var mockSet = GetMockSet<YourEntityType>("TestName");
-```
-
-Теперь ваш мок-объект будет поддерживать асинхронные методы, и ваши тесты могут корректно использовать их.
-
-### Заключение
-
-Этот код позволяет вам реализовать поддержку асинхронных запросов в тестах, когда вы работаете с **обычным Entity Framework** (EF 6.x). Это помогает вам тестировать асинхронные операции, не требуя реального доступа к базе данных. Если у вас есть дополнительные вопросы или необходимо внести изменения, дайте знать!
+### Замечания:
+- Убедитесь, что вы заменили `YOUR_ACCESS_KEY` и `YOUR_SECRET_KEY` на свои реальные ключи доступа.
+- Если ваш S3 поддерживает только определенные регионы, убедитесь, что вы указали правильный регион.
+- Параметр `SignatureVersion = "v4"` обязателен для аутентификации через подписанный запрос, если ваш сервер требует этого.
