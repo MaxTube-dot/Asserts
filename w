@@ -1,79 +1,118 @@
-Чтобы найти объект в Amazon S3 по тегам без его загрузки, вам нужно сначала получить список объектов в бакете и затем извлекать их теги для фильтрации. Поскольку S3 не поддерживает поиск по тегам напрямую, вам придется выполнить два этапа:
+Для получения списка всех объектов в бакете Amazon S3 с их ключами, MD5-хэшами и размерами в байтах на языке C#, вы можете воспользоваться AWS SDK для .NET. Ниже представлен оптимизированный пример кода, который использует асинхронные вызовы и параллельную обработку для повышения скорости выполнения.
 
-1. **Получить список объектов из бакета.**
-2. **Получить теги для каждого объекта и фильтровать по нужным тегам.**
+## 1. Установка AWS SDK для .NET
 
-Этот процесс будет требовать перебора объектов и проверки тегов для каждого из них. Давайте рассмотрим, как это можно реализовать на C#.
+Если вы еще не установили AWS SDK для .NET, добавьте его в ваш проект через NuGet:
 
-### Пример кода для поиска объектов по тегам
+Install-Package AWSSDK.S3
 
-```csharp
-using Amazon.S3;
-using Amazon.S3.Model;
+
+## 2. Оптимизированный код на C#
+
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
+using Amazon;
+using Amazon.S3;
+using Amazon.S3.Model;
 
-class Program
+namespace S3BucketLister
 {
-    private static readonly string bucketName = "example-bucket"; // Замените на имя вашего бакета
-    private static readonly IAmazonS3 s3Client = new AmazonS3Client();
-
-    public static async Task Main(string[] args)
+    public class S3ObjectInfo
     {
-        string tagKeyToSearch = "GUID"; // Ключ тега для поиска
-        string tagValueToSearch = "your-guid-value"; // Значение тега для поиска
+        public string Key { get; set; }
+        public string ETag { get; set; } // Обычно ETag соответствует MD5 для непрерывных объектов
+        public long Size { get; set; }
+    }
 
-        // Получаем список объектов в бакете
-        var objects = await s3Client.ListObjectsAsync(bucketName);
+    class Program
+    {
+        private static readonly string bucketName = "your-bucket-name";
+        private static readonly RegionEndpoint bucketRegion = RegionEndpoint.USEast1; // Укажите регион вашего бакета
+        private static IAmazonS3 s3Client;
 
-        // Список для хранения результатов
-        var matchedFiles = new List<string>();
-
-        foreach (var s3Object in objects.S3Objects)
+        static async Task Main(string[] args)
         {
-            // Получаем теги для объекта
-            var tagsResponse = await s3Client.GetObjectTaggingAsync(bucketName, s3Object.Key);
+            s3Client = new AmazonS3Client(bucketRegion);
 
-            // Фильтруем теги
-            var matchedTag = tagsResponse.Tagging.FirstOrDefault(tag => tag.Key == tagKeyToSearch && tag.Value == tagValueToSearch);
-
-            if (matchedTag != null)
+            try
             {
-                matchedFiles.Add(s3Object.Key); // Добавляем объект, если теги совпадают
+                List<S3ObjectInfo> allObjects = await GetAllS3ObjectsAsync(bucketName);
+                
+                // Пример вывода
+                foreach (var obj in allObjects)
+                {
+                    Console.WriteLine($"Key: {obj.Key}, ETag(MD5): {obj.ETag}, Size: {obj.Size} bytes");
+                }
+
+                Console.WriteLine($"Total objects: {allObjects.Count}");
+            }
+            catch (AmazonS3Exception e)
+            {
+                Console.WriteLine($"Error encountered ***. Message:'{e.Message}'");
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"Unknown error encountered ***. Message:'{e.Message}'");
             }
         }
 
-        // Выводим найденные файлы
-        Console.WriteLine("Найденные файлы с заданными тегами:");
-        foreach (var file in matchedFiles)
+        public static async Task<List<S3ObjectInfo>> GetAllS3ObjectsAsync(string bucketName)
         {
-            Console.WriteLine(file);
+            List<S3ObjectInfo> objects = new List<S3ObjectInfo>();
+            string continuationToken = null;
+            int maxConcurrency = 10; // Максимальное количество параллельных потоков
+
+            var listRequest = new ListObjectsV2Request
+            {
+                BucketName = bucketName,
+                MaxKeys = 1000, // Максимальное количество объектов за запрос
+                ContinuationToken = continuationToken
+            };
+
+            do
+            {
+                listRequest.ContinuationToken = continuationToken;
+                var response = await s3Client.ListObjectsV2Async(listRequest);
+
+                foreach (var s3Object in response.S3Objects)
+                {
+                    objects.Add(new S3ObjectInfo
+                    {
+                        Key = s3Object.Key,
+                        ETag = s3Object.ETag.Trim('"'), // Удаляем кавычки вокруг ETag
+                        Size = s3Object.Size
+                    });
+                }
+
+                continuationToken = response.IsTruncated ? response.NextContinuationToken : null;
+
+            } while (continuationToken != null);
+
+            return objects;
         }
     }
 }
-```
 
-### Объяснение кода
 
-1. **Список объектов**: Мы используем метод `ListObjectsAsync`, чтобы получить список всех объектов в указанном бакете.
-2. **Получение тегов для каждого объекта**: Для каждого объекта мы вызываем `GetObjectTaggingAsync`, чтобы получить его теги.
-3. **Фильтрация тегов**: Проверяем, содержатся ли искомые ключ и значение в тегах, и добавляем соответствующие объекты в список результатов.
-4. **Вывод результатов**: Наконец, мы выводим список объектов, соответствующих критериям поиска.
+## 3. Объяснение кода
 
-### Ограничения данного подхода
+### 3.1. Инициализация клиента S3
 
-1. **Производительность**: Если в бакете много объектов, это может занять значительное время и потребовать много запросов к S3. Каждый вызов `GetObjectTaggingAsync` создает отдельный запрос, что может привести к увеличению затрат.
-  
-2. **Лимиты API**: Amazon S3 имеет ограничения на количество запросов, которые можно выполнять за определенное время. Если у вас очень большое количество объектов, вы можете столкнуться с проблемами превышения лимитов API.
+private static readonly string bucketName = "your-bucket-name";
+private static readonly RegionEndpoint bucketRegion = RegionEndpoint.USEast1; // Укажите регион вашего бакета
+private static IAmazonS3 s3Client;
 
-3. **Пагинация**: Метод `ListObjectsAsync` возвращает только первые 1000 объектов. Если в бакете больше 1000 объектов, вам нужно будет реализовать пагинацию, чтобы получить все объекты.
 
-### Рекомендации для улучшения
+- bucketName: Замените "your-bucket-name" на имя вашего S3-бакета.
+- bucketRegion: Укажите регион вашего бакета, например, RegionEndpoint.USEast1.
 
-1. **Хранение метаданных**: Если вы планируете часто выполнять поиск по тегам, рассмотрите возможность хранения информации о тегах в базе данных, чтобы упростить и ускорить поиск.
-  
-2. **Использование инвентаризации**: Использование S3 Inventory для создания инвентарных отчетов, включающих информацию о тегах, может помочь в упрощении поиска по тегам.
+### 3.2. Метод GetAllS3ObjectsAsync
 
-3. **Обработка в асинхронном режиме**: Чтобы улучшить производительность, можно рассмотреть возможность использования параллельного выполнения запросов на получение тегов для объектов, что может значительно ускорить процесс поиска.
+public static async Task<List<S3ObjectInfo>> GetAllS3ObjectsAsync(string bucketName)
+{
+    List<S3ObjectInfo> objects = new List<S3ObjectInfo>();
+    string continuationToken = null;
+
+    var listRequest = new ListObjectsV2Request
+    {
