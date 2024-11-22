@@ -1,118 +1,73 @@
-Для получения списка всех объектов в бакете Amazon S3 с их ключами, MD5-хэшами и размерами в байтах на языке C#, вы можете воспользоваться AWS SDK для .NET. Ниже представлен оптимизированный пример кода, который использует асинхронные вызовы и параллельную обработку для повышения скорости выполнения.
+Да, можно разработать алгоритм для оценки схожести строк. Один из самых распространенных способов сделать это — использовать метрики, такие как расстояние Левенштейна или коэффициент Джарка. Они позволяют измерить, насколько две строки похожи друг на друга.
 
-## 1. Установка AWS SDK для .NET
-
-Если вы еще не установили AWS SDK для .NET, добавьте его в ваш проект через NuGet:
-
-Install-Package AWSSDK.S3
-
-
-## 2. Оптимизированный код на C#
+Вот пример на C#, который использует расстояние Левенштейна для определения схожести двух строк:
 
 using System;
-using System.Collections.Generic;
-using System.Threading.Tasks;
-using Amazon;
-using Amazon.S3;
-using Amazon.S3.Model;
 
-namespace S3BucketLister
+class Program
 {
-    public class S3ObjectInfo
+    static void Main()
     {
-        public string Key { get; set; }
-        public string ETag { get; set; } // Обычно ETag соответствует MD5 для непрерывных объектов
-        public long Size { get; set; }
+        // Примеры строк для сравнения
+        string str1 = "п. Остафьево, район Село Остафьево, д. 3";
+        string str2 = "п. Остафьево, район Село Остафьево, д. 4";
+
+        // Вычисление схожести
+        double similarity = CalculateSimilarity(str1, str2);
+        Console.WriteLine($"Схожесть строк: {similarity * 100:F2}%");
     }
 
-    class Program
+    static double CalculateSimilarity(string str1, string str2)
     {
-        private static readonly string bucketName = "your-bucket-name";
-        private static readonly RegionEndpoint bucketRegion = RegionEndpoint.USEast1; // Укажите регион вашего бакета
-        private static IAmazonS3 s3Client;
+        int distance = LevenshteinDistance(str1, str2);
+        int maxLength = Math.Max(str1.Length, str2.Length);
 
-        static async Task Main(string[] args)
+        // Схожесть в процентах
+        return maxLength == 0 ? 1.0 : 1.0 - (double)distance / maxLength;
+    }
+
+    static int LevenshteinDistance(string s, string t)
+    {
+        int n = s.Length;
+        int m = t.Length;
+        var d = new int[n + 1, m + 1];
+
+        for (int i = 0; i <= n; i++)
+            d[i, 0] = i;
+        for (int j = 0; j <= m; j++)
+            d[0, j] = j;
+
+        for (int i = 1; i <= n; i++)
         {
-            s3Client = new AmazonS3Client(bucketRegion);
-
-            try
+            for (int j = 1; j <= m; j++)
             {
-                List<S3ObjectInfo> allObjects = await GetAllS3ObjectsAsync(bucketName);
-                
-                // Пример вывода
-                foreach (var obj in allObjects)
-                {
-                    Console.WriteLine($"Key: {obj.Key}, ETag(MD5): {obj.ETag}, Size: {obj.Size} bytes");
-                }
-
-                Console.WriteLine($"Total objects: {allObjects.Count}");
-            }
-            catch (AmazonS3Exception e)
-            {
-                Console.WriteLine($"Error encountered ***. Message:'{e.Message}'");
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine($"Unknown error encountered ***. Message:'{e.Message}'");
+                int cost = (t[j - 1] == s[i - 1]) ? 0 : 1;
+                d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1), d[i - 1, j - 1] + cost);
             }
         }
 
-        public static async Task<List<S3ObjectInfo>> GetAllS3ObjectsAsync(string bucketName)
-        {
-            List<S3ObjectInfo> objects = new List<S3ObjectInfo>();
-            string continuationToken = null;
-            int maxConcurrency = 10; // Максимальное количество параллельных потоков
-
-            var listRequest = new ListObjectsV2Request
-            {
-                BucketName = bucketName,
-                MaxKeys = 1000, // Максимальное количество объектов за запрос
-                ContinuationToken = continuationToken
-            };
-
-            do
-            {
-                listRequest.ContinuationToken = continuationToken;
-                var response = await s3Client.ListObjectsV2Async(listRequest);
-
-                foreach (var s3Object in response.S3Objects)
-                {
-                    objects.Add(new S3ObjectInfo
-                    {
-                        Key = s3Object.Key,
-                        ETag = s3Object.ETag.Trim('"'), // Удаляем кавычки вокруг ETag
-                        Size = s3Object.Size
-                    });
-                }
-
-                continuationToken = response.IsTruncated ? response.NextContinuationToken : null;
-
-            } while (continuationToken != null);
-
-            return objects;
-        }
+        return d[n, m];
     }
 }
 
 
-## 3. Объяснение кода
+▎Как работает код:
 
-### 3.1. Инициализация клиента S3
+1. Метод LevenshteinDistance вычисляет расстояние Левенштейна между двумя строками. Это количество операций (вставка, удаление, замена), необходимых для преобразования одной строки в другую.
 
-private static readonly string bucketName = "your-bucket-name";
-private static readonly RegionEndpoint bucketRegion = RegionEndpoint.USEast1; // Укажите регион вашего бакета
-private static IAmazonS3 s3Client;
+  
+2. Метод CalculateSimilarity использует расстояние Левенштейна для расчета схожести в процентах. Схожесть определяется как отношение длины самой длинной строки к количеству изменений, необходимых для приведения одной строки к другой.
 
+▎Использование:
 
-- bucketName: Замените "your-bucket-name" на имя вашего S3-бакета.
-- bucketRegion: Укажите регион вашего бакета, например, RegionEndpoint.USEast1.
+• Замените str1 и str2 на любые строки, которые вы хотите сравнить.
 
-### 3.2. Метод GetAllS3ObjectsAsync
+• Запустите программу, и вы получите процент схожести между строками.
 
-public static async Task<List<S3ObjectInfo>> GetAllS3ObjectsAsync(string bucketName)
-{
-    List<S3ObjectInfo> objects = new List<S3ObjectInfo>();
-    string continuationToken = null;
+▎Настройка алгоритма:
 
-    var listRequest = new ListObjectsV2Request
-    {
+• Вы можете изменить алгоритм нормализации строк перед сравнением (например, привести к нижнему регистру или удалить лишние пробелы) для повышения точности.
+
+• Также можно использовать другие метрики схожести в зависимости от ваших требований.
+
+Если у вас есть дополнительные вопросы или предложения по улучшению алгоритма, дайте знать!
