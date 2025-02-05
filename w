@@ -1,24 +1,53 @@
-<div style="position: relative;">
-  <table style="border-collapse: collapse;">
-    <tr>
-      <!-- Колонка с картинкой -->
-      <td style="vertical-align: top; padding-right: 20px;">
-        <img src="icon.png" alt="Логотип" style="width: 100px; height: auto;">
-      </td>
-      <!-- Колонка с текстом -->
-      <td style="vertical-align: top; text-align: left;">
-        <div style="width: 300px;">
-          <div style="margin-bottom: 10px; font-weight: bold;">
-            АКЦИОНЕРНОЕ ОБЩЕСТВО "ТБАНК"
-          </div>
-          <div style="margin-bottom: 10px;">
-            РОССИЯ, 127287, МОСКВА, УЛ. 2-Я ХУТОРСКАЯ, Д. 38А, СТР. 26
-          </div>
-          <div>
-            ТЕЛ.: +7 495 648-10-00, TBANK.RU
-          </div>
-        </div>
-      </td>
-    </tr>
-  </table>
-</div>
+Чтобы перехватывать вызовы Console.WriteLine в C# и выводить текст в RichTextBox, можно создать собственный класс, который будет обрабатывать вывод. В этом классе необходимо будет переопределить методы для перенаправления вывода.
+
+Вот пример, как это можно сделать:
+
+1. Создайте класс ConsoleRedirect:
+
+using System;
+using System.IO;
+using System.Text;
+using System.Windows.Forms;
+
+public class ConsoleRedirect : TextWriter
+{
+    private RichTextBox _richTextBox;
+
+    public ConsoleRedirect(RichTextBox richTextBox)
+    {
+        _richTextBox = richTextBox;
+    }
+
+    public override Encoding Encoding => Encoding.UTF8;
+
+    public override void Write(char value)
+    {
+        _richTextBox.AppendText(value.ToString());
+        _richTextBox.ScrollToCaret();
+    }
+
+    public override void Write(string value)
+    {
+        _richTextBox.AppendText(value);
+        _richTextBox.ScrollToCaret();
+    }
+
+    public override void WriteLine(string value)
+    {
+        _richTextBox.AppendText(value + Environment.NewLine);
+        _richTextBox.ScrollToCaret();
+    }
+}
+
+
+2. В вашем основном коде, например, в Form_Load, перенаправьте консольный вывод:
+
+private void Form_Load(object sender, EventArgs e)
+{
+    Console.SetOut(new ConsoleRedirect(myRichTextBox));
+}
+
+
+Не забудьте заменить myRichTextBox на имя вашего элемента RichTextBox. Теперь все вызовы Console.WriteLine будут автоматически выводиться в RichTextBox. 
+
+С этим подходом вы сможете удобно управлять выводом и выводить текст как в консоль, так и в интерфейс вашего приложения.
