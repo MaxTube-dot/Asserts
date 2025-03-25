@@ -1,53 +1,87 @@
-Чтобы перехватывать вызовы Console.WriteLine в C# и выводить текст в RichTextBox, можно создать собственный класс, который будет обрабатывать вывод. В этом классе необходимо будет переопределить методы для перенаправления вывода.
-
-Вот пример, как это можно сделать:
-
-1. Создайте класс ConsoleRedirect:
-
 using System;
-using System.IO;
-using System.Text;
-using System.Windows.Forms;
+using System.Linq;
+using Newtonsoft.Json.Linq;
 
-public class ConsoleRedirect : TextWriter
+public class JsonMasker
 {
-    private RichTextBox _richTextBox;
-
-    public ConsoleRedirect(RichTextBox richTextBox)
+    public static string MaskJsonValues(string input)
     {
-        _richTextBox = richTextBox;
+        if (!IsValidJson(input))
+        {
+            return input; // Возвращаем оригинальную строку, если это не JSON
+        }
+
+        try
+        {
+            var json = JToken.Parse(input);
+            MaskJsonTokens(json);
+            return json.ToString();
+        }
+        catch
+        {
+            return input; // В случае ошибки возвращаем оригинальную строку
+        }
     }
 
-    public override Encoding Encoding => Encoding.UTF8;
-
-    public override void Write(char value)
+    private static bool IsValidJson(string input)
     {
-        _richTextBox.AppendText(value.ToString());
-        _richTextBox.ScrollToCaret();
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return false;
+        }
+
+        input = input.Trim();
+        return (input.StartsWith("{") && input.EndsWith("}")) || 
+               (input.StartsWith("[") && input.EndsWith("]"));
     }
 
-    public override void Write(string value)
+    private static void MaskJsonTokens(JToken token)
     {
-        _richTextBox.AppendText(value);
-        _richTextBox.ScrollToCaret();
+        switch (token.Type)
+        {
+            case JTokenType.Object:
+                foreach (var property in ((JObject)token).Properties())
+                {
+                    MaskJsonTokens(property.Value);
+                }
+                break;
+
+            case JTokenType.Array:
+                foreach (var item in ((JArray)token))
+                {
+                    MaskJsonTokens(item);
+                }
+                break;
+
+            case JTokenType.String:
+                var strValue = token.Value<string>();
+                if (strValue != null && strValue.Length > 1)
+                {
+                    token.Replace(MaskString(strValue));
+                }
+                break;
+
+            case JTokenType.Integer:
+            case JTokenType.Float:
+                var numStr = token.ToString();
+                if (numStr.Length > 1)
+                {
+                    token.Replace(MaskString(numStr));
+                }
+                break;
+        }
     }
 
-    public override void WriteLine(string value)
+    private static string MaskString(string input)
     {
-        _richTextBox.AppendText(value + Environment.NewLine);
-        _richTextBox.ScrollToCaret();
+        if (input.Length <= 2)
+        {
+            return input; // Не маскируем короткие строки
+        }
+
+        char firstChar = input[0];
+        char lastChar = input[input.Length - 1];
+        string maskedPart = new string('*', input.Length - 2);
+        return $"{firstChar}{maskedPart}{lastChar}";
     }
 }
-
-
-2. В вашем основном коде, например, в Form_Load, перенаправьте консольный вывод:
-
-private void Form_Load(object sender, EventArgs e)
-{
-    Console.SetOut(new ConsoleRedirect(myRichTextBox));
-}
-
-
-Не забудьте заменить myRichTextBox на имя вашего элемента RichTextBox. Теперь все вызовы Console.WriteLine будут автоматически выводиться в RichTextBox. 
-
-С этим подходом вы сможете удобно управлять выводом и выводить текст как в консоль, так и в интерфейс вашего приложения.
