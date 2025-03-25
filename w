@@ -1,87 +1,55 @@
 using System;
-using System.Linq;
-using Newtonsoft.Json.Linq;
+using System.Text;
 
-public class JsonMasker
+public static class StringMasker
 {
-    public static string MaskJsonValues(string input)
+    public static string MaskSensitiveData(string input)
     {
-        if (!IsValidJson(input))
+        if (string.IsNullOrEmpty(input))
+            return input;
+
+        var result = new StringBuilder(input.Length);
+        var currentWord = new StringBuilder();
+        
+        for (int i = 0; i < input.Length; i++)
         {
-            return input; // Возвращаем оригинальную строку, если это не JSON
+            char c = input[i];
+            
+            // Если символ буква или цифра — добавляем в текущее слово
+            if (char.IsLetterOrDigit(c))
+            {
+                currentWord.Append(c);
+            }
+            else
+            {
+                // Если накопилось слово — маскируем и добавляем в результат
+                if (currentWord.Length > 0)
+                {
+                    result.Append(MaskWord(currentWord.ToString()));
+                    currentWord.Clear();
+                }
+                result.Append(c); // Добавляем не-буквенный символ как есть
+            }
         }
 
-        try
+        // Обработка последнего слова, если строка заканчивается буквой/цифрой
+        if (currentWord.Length > 0)
         {
-            var json = JToken.Parse(input);
-            MaskJsonTokens(json);
-            return json.ToString();
+            result.Append(MaskWord(currentWord.ToString()));
         }
-        catch
-        {
-            return input; // В случае ошибки возвращаем оригинальную строку
-        }
+
+        return result.ToString();
     }
 
-    private static bool IsValidJson(string input)
+    private static string MaskWord(string word)
     {
-        if (string.IsNullOrWhiteSpace(input))
+        if (word.Length <= 2)
+            return word;
+
+        return string.Create(word.Length, word, (chars, state) =>
         {
-            return false;
-        }
-
-        input = input.Trim();
-        return (input.StartsWith("{") && input.EndsWith("}")) || 
-               (input.StartsWith("[") && input.EndsWith("]"));
-    }
-
-    private static void MaskJsonTokens(JToken token)
-    {
-        switch (token.Type)
-        {
-            case JTokenType.Object:
-                foreach (var property in ((JObject)token).Properties())
-                {
-                    MaskJsonTokens(property.Value);
-                }
-                break;
-
-            case JTokenType.Array:
-                foreach (var item in ((JArray)token))
-                {
-                    MaskJsonTokens(item);
-                }
-                break;
-
-            case JTokenType.String:
-                var strValue = token.Value<string>();
-                if (strValue != null && strValue.Length > 1)
-                {
-                    token.Replace(MaskString(strValue));
-                }
-                break;
-
-            case JTokenType.Integer:
-            case JTokenType.Float:
-                var numStr = token.ToString();
-                if (numStr.Length > 1)
-                {
-                    token.Replace(MaskString(numStr));
-                }
-                break;
-        }
-    }
-
-    private static string MaskString(string input)
-    {
-        if (input.Length <= 2)
-        {
-            return input; // Не маскируем короткие строки
-        }
-
-        char firstChar = input[0];
-        char lastChar = input[input.Length - 1];
-        string maskedPart = new string('*', input.Length - 2);
-        return $"{firstChar}{maskedPart}{lastChar}";
-    }
-}
+            chars[0] = state[0];
+            chars[^1] = state[^1]; // Последний символ (индекс Length - 1)
+            
+            for (int i = 1; i < chars.Length - 1; i++)
+            {
