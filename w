@@ -1,7 +1,13 @@
-Это сообщение обычно означает, что Baserow не смог подключиться к PostgreSQL или возникла ошибка при инициализации приложения. Давайте исправим конфигурацию и добавим логирование для диагностики.
+Ошибка `ECONNREFUSED 127.0.0.1:8000` указывает на проблему внутреннего соединения между компонентами Baserow. Вот как это исправить:
 
-### Обновлённый `docker-compose.yml`:
+### Причина проблемы:
+1. Frontend Baserow не может подключиться к backend (порт 8000)
+2. Возможно, backend не запустился или работает неправильно
+3. В конфигурации по умолчанию используется localhost, что внутри Docker не работает
 
+### Решения:
+
+1. **Обновлённый `docker-compose.yml`**:
 ```yaml
 version: '3.8'
 
@@ -14,98 +20,87 @@ services:
       POSTGRES_PASSWORD: baserow
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-    restart: unless-stopped
-    networks:
-      - baserow_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U baserow -d baserow"]
       interval: 5s
       timeout: 5s
-      retries: 10  # Увеличиваем количество попыток
+      retries: 10
+    networks:
+      - baserow_network
 
-  baserow:
+  backend:
     image: baserow/baserow:latest
     depends_on:
       db:
         condition: service_healthy
     environment:
-      BASEROW_PUBLIC_URL: http://localhost:80
       DATABASE_URL: postgres://baserow:baserow@db:5432/baserow
-      BASEROW_DEBUG: "true"  # Включаем режим отладки
-    ports:
-      - "80:80"
+      BASEROW_BACKEND_BIND_ADDRESS: 0.0.0.0
+      BASEROW_BACKEND_PORT: 8000
+    networks:
+      - baserow_network
     volumes:
-      - baserow_data:/baserow/data
-      - baserow_logs:/var/log  # Монтируем логи
-    restart: unless-stopped
+      - backend_data:/baserow/data
+
+  frontend:
+    image: baserow/baserow:latest
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      BASEROW_PUBLIC_URL: http://localhost
+      BASEROW_BACKEND_URL: http://backend:8000
+      BASEROW_WEBFRONTEND_BIND_ADDRESS: 0.0.0.0
+      BASEROW_WEBFRONTEND_PORT: 3000
+    ports:
+      - "80:3000"
     networks:
       - baserow_network
 
 volumes:
   postgres_data:
-  baserow_data:
-  baserow_logs:  # Volume для логов
+  backend_data:
 
 networks:
   baserow_network:
     driver: bridge
 ```
 
-### Шаги для диагностики:
+### Ключевые изменения:
+1. Разделил сервисы на `backend` и `frontend`
+2. Явно указал адреса и порты для внутренней коммуникации
+3. Заменил localhost на имя сервиса `backend` для внутренних соединений
 
-1. **Проверьте логи PostgreSQL**:
-   ```bash
-   docker-compose logs db
-   ```
+### Дополнительные шаги:
+1. Удалите старые контейнеры и volumes:
+```bash
+docker-compose down -v
+```
 
-2. **Проверьте логи Baserow**:
-   ```bash
-   docker-compose logs baserow
-   ```
+2. Пересоздайте сервисы:
+```bash
+docker-compose up -d
+```
 
-3. **Проверьте подключение к БД**:
-   ```bash
-   docker-compose exec db psql -U baserow -d baserow -c "\conninfo"
-   ```
+3. Проверьте логи каждого компонента:
+```bash
+docker-compose logs backend
+docker-compose logs frontend
+docker-compose logs db
+```
 
-### Частые проблемы и решения:
-
-1. **Ошибка подключения к БД**:
-   - Убедитесь, что в `DATABASE_URL` правильные credentials
-   - Проверьте, что БД полностью инициализировалась перед запуском Baserow
-
-2. **Проблемы с правами**:
-   ```bash
-   docker-compose exec db psql -U baserow -d baserow -c "GRANT ALL PRIVILEGES ON DATABASE baserow TO baserow;"
-   ```
-
-3. **Недостаточно памяти**:
-   - Увеличьте ресурсы Docker (особенно если работаете на Windows/Mac)
-   - Добавьте в `.env`:
-     ```
-     POSTGRES_SHARED_BUFFERS=512MB
-     POSTGRES_EFFECTIVE_CACHE_SIZE=1536MB
-     ```
-
-4. **Проблемы с volumes**:
-   Попробуйте очистить volumes и пересоздать:
-   ```bash
-   docker-compose down -v
-   docker-compose up -d
-   ```
-
-### Дополнительные настройки для production:
-Если проблема остаётся, попробуйте более надёжную конфигурацию:
+### Если проблема сохраняется:
+1. Увеличьте таймауты:
 ```yaml
 environment:
-  DATABASE_URL: postgres://baserow:baserow@db:5432/baserow?connect_timeout=10&keepalives=1&keepalives_idle=30&keepalives_interval=10
-  BASEROW_DISABLE_INITIAL_CREATE: "false"  # Убедитесь, что это false для первого запуска
+  BASEROW_STARTUP_TIMEOUT: "300"  # 5 минут вместо стандартных 60 секунд
 ```
 
-После внесения изменений перезапустите:
+2. Проверьте доступность backend:
 ```bash
-docker-compose down && docker-compose up -d
+docker-compose exec backend curl -v http://localhost:8000/api/health/
 ```
 
-Какие именно ошибки вы видите в логах? Это поможет точнее определить проблему.
+3. Для production используйте официальные образы с тегами версий вместо `latest`
+
+После этих изменений frontend должен корректно подключаться к backend через Docker network. Ошибка ECONNREFUSED больше не должна появляться.
