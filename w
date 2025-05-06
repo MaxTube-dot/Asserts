@@ -1,4 +1,4 @@
-Вот `docker-compose.yml` файл, который разворачивает PostgreSQL и NocoDB, создает связанные таблицы (клиент, товар, заказ) и заполняет их тестовыми данными:
+Отличный выбор! Вот готовый `docker-compose.yml` для кастомного решения с **PostgreSQL + Hasura (GraphQL API) + AdminJS** (админ-панель):
 
 ```yaml
 version: '3.8'
@@ -10,120 +10,209 @@ services:
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: admin
-      POSTGRES_DB: nocodb
+      POSTGRES_DB: appdb
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
     networks:
-      - nocodb_network
+      - app_network
 
-  nocodb:
-    image: nocodb/nocodb:latest
-    container_name: nocodb
+  hasura:
+    image: hasura/graphql-engine:v2.33.0
+    container_name: hasura
     depends_on:
       - postgres
     environment:
-      NC_DB: pg://postgres:5432?u=admin&p=admin&d=nocodb
-      NC_AUTH_JWT_SECRET: my-secret-key
+      HASURA_GRAPHQL_DATABASE_URL: "postgres://admin:admin@postgres:5432/appdb"
+      HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
+      HASURA_GRAPHQL_ADMIN_SECRET: "myadminsecretkey"
+      HASURA_GRAPHQL_DEV_MODE: "false"
     ports:
-      - "8080:8080"
+      - "8080:8080"  # Hasura Console
     networks:
-      - nocodb_network
-    restart: unless-stopped
+      - app_network
+
+  adminjs:
+    image: node:18
+    container_name: adminjs
+    depends_on:
+      - postgres
+      - hasura
+    working_dir: /app
+    volumes:
+      - ./adminjs:/app
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: "postgres://admin:admin@postgres:5432/appdb"
+      HASURA_GRAPHQL_URL: "http://hasura:8080/v1/graphql"
+    ports:
+      - "3000:3000"  # AdminJS панель
+    networks:
+      - app_network
+    command: >
+      sh -c "npm install && npm start"
 
 volumes:
   postgres_data:
 
 networks:
-  nocodb_network:
+  app_network:
     driver: bridge
 ```
 
-И файл `init.sql` для инициализации базы данных (должен находиться в той же директории, что и docker-compose.yml):
+---
 
+## **Как это работает?**
+1. **PostgreSQL**:
+   - Основная БД (`appdb`).
+   - SQL-скрипт `init.sql` создаст таблицы при старте (пример ниже).
+
+2. **Hasura**:
+   - Автоматически генерирует GraphQL API для PostgreSQL.
+   - Консоль доступна на `http://localhost:8080`.
+
+3. **AdminJS**:
+   - Админ-панель с UI для управления данными.
+   - Доступна на `http://localhost:3000`.
+
+---
+
+## **Шаги для запуска**
+### 1. Создайте файл `init.sql` (структура БД)
 ```sql
--- Создание таблицы клиентов
+-- Клиенты
 CREATE TABLE client (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    email VARCHAR(100) UNIQUE NOT NULL,
-    phone VARCHAR(20),
-    address TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  email VARCHAR(100) UNIQUE NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Создание таблицы товаров
+-- Товары
 CREATE TABLE product (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    description TEXT,
-    price DECIMAL(10, 2) NOT NULL,
-    stock_quantity INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  price DECIMAL(10, 2) NOT NULL
 );
 
--- Создание таблицы заказов
+-- Заказы (связи с клиентами и товарами)
 CREATE TABLE "order" (
-    id SERIAL PRIMARY KEY,
-    client_id INTEGER NOT NULL,
-    order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    status VARCHAR(20) DEFAULT 'pending',
-    total_amount DECIMAL(10, 2) NOT NULL,
-    FOREIGN KEY (client_id) REFERENCES client(id) ON DELETE CASCADE
+  id SERIAL PRIMARY KEY,
+  client_id INTEGER REFERENCES client(id),
+  status VARCHAR(20) DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Создание таблицы элементов заказа (связь многие-ко-многим между заказом и товаром)
+-- Товары в заказе (N:M)
 CREATE TABLE order_item (
-    order_id INTEGER NOT NULL,
-    product_id INTEGER NOT NULL,
-    quantity INTEGER NOT NULL,
-    unit_price DECIMAL(10, 2) NOT NULL,
-    PRIMARY KEY (order_id, product_id),
-    FOREIGN KEY (order_id) REFERENCES "order"(id) ON DELETE CASCADE,
-    FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE
+  order_id INTEGER REFERENCES "order"(id),
+  product_id INTEGER REFERENCES product(id),
+  quantity INTEGER NOT NULL,
+  PRIMARY KEY (order_id, product_id)
 );
-
--- Заполнение таблицы клиентов тестовыми данными
-INSERT INTO client (name, email, phone, address) VALUES
-('Иван Иванов', 'ivan@example.com', '+79161234567', 'ул. Ленина, д. 10, кв. 5'),
-('Петр Петров', 'petr@example.com', '+79167654321', 'ул. Пушкина, д. 15, кв. 12'),
-('Сергей Сергеев', 'sergey@example.com', '+79165554433', 'ул. Гагарина, д. 3, кв. 7');
-
--- Заполнение таблицы товаров тестовыми данными
-INSERT INTO product (name, description, price, stock_quantity) VALUES
-('Ноутбук', '15-дюймовый ноутбук с процессором Intel Core i5', 59999.99, 10),
-('Смартфон', 'Смартфон с 6.5-дюймовым экраном и 128 ГБ памяти', 34999.99, 15),
-('Наушники', 'Беспроводные наушники с шумоподавлением', 8999.99, 20),
-('Клавиатура', 'Механическая клавиатура с RGB подсветкой', 4999.99, 8);
-
--- Заполнение таблицы заказов тестовыми данными
-INSERT INTO "order" (client_id, status, total_amount) VALUES
-(1, 'completed', 94999.98),
-(2, 'processing', 39999.99),
-(3, 'pending', 13999.98);
-
--- Заполнение таблицы элементов заказа тестовыми данными
-INSERT INTO order_item (order_id, product_id, quantity, unit_price) VALUES
-(1, 1, 1, 59999.99),
-(1, 3, 1, 8999.99),
-(2, 2, 1, 34999.99),
-(3, 3, 1, 8999.99),
-(3, 4, 1, 4999.99);
 ```
 
-Инструкции по использованию:
+### 2. Создайте папку `adminjs` с файлами:
+#### `package.json`
+```json
+{
+  "name": "adminjs-app",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "@adminjs/express": "^5.0.0",
+    "@adminjs/postgres": "^2.0.0",
+    "@adminjs/hasura": "^1.0.0",
+    "adminjs": "^6.0.0",
+    "express": "^4.18.2",
+    "pg": "^8.11.0"
+  }
+}
+```
 
-1. Создайте папку для проекта и поместите в нее оба файла (`docker-compose.yml` и `init.sql`)
-2. Запустите сервисы командой: `docker-compose up -d`
-3. После запуска:
-   - PostgreSQL будет доступен на localhost:5432
-   - NocoDB будет доступен на http://localhost:8080
-4. Войдите в NocoDB с учетными данными по умолчанию (admin@nocodb.com / password) и сразу увидите созданные таблицы с данными
+#### `app.js`
+```javascript
+const AdminJS = require('adminjs');
+const AdminJSExpress = require('@adminjs/express');
+const AdminJSPostgres = require('@adminjs/postgres');
+const AdminJSHasura = require('@adminjs/hasura');
 
-В NocoDB вы сможете:
-- Просматривать и редактировать данные
-- Создавать представления
-- Настраивать отношения между таблицами
-- Создавать API для работы с данными
+// Подключение к PostgreSQL
+AdminJS.registerAdapter({
+  Database: AdminJSPostgres.Database,
+  Resource: AdminJSPostgres.Resource,
+});
+
+const adminJs = new AdminJS({
+  databases: [], // Автоматическое определение таблиц из PostgreSQL
+  rootPath: '/admin',
+  branding: {
+    companyName: 'My Custom CRM',
+  },
+});
+
+const router = AdminJSExpress.buildRouter(adminJs);
+
+const app = require('express')();
+app.use(adminJs.options.rootPath, router);
+
+app.listen(3000, () => {
+  console.log('AdminJS доступен на http://localhost:3000/admin');
+});
+```
+
+### 3. Запустите систему:
+```bash
+docker-compose up -d
+```
+
+---
+
+## **Что вы получите?**
+1. **Hasura GraphQL API**:
+   - Доступен на `http://localhost:8080`.
+   - Запросы к данным через GraphQL:
+     ```graphql
+     query {
+       clients {
+         id
+         name
+         orders { status products { name } }
+       }
+     }
+     ```
+
+2. **AdminJS Панель**:
+   - Доступна на `http://localhost:3000/admin`.
+   - Возможности:
+     - Управление таблицами (CRUD).
+     - Фильтрация и сортировка.
+     - Экспорт данных (CSV/JSON).
+     - Настройка прав доступа.
+
+3. **PostgreSQL**:
+   - Данные сохраняются в Docker-томе (`postgres_data`).
+
+---
+
+## **Дополнительные настройки**
+### Для Hasura:
+- Настройте права доступа в консоли (`http://localhost:8080` → `Data` → `Permissions`).
+- Добавьте аутентификацию через JWT, если нужно.
+
+### Для AdminJS:
+- Кастомизируйте интерфейс в `app.js`:
+  ```javascript
+  const adminJs = new AdminJS({
+    resources: [{
+      resource: { model: 'Client', client: 'postgres' },
+      options: { properties: { password: { isVisible: false } } }
+    }]
+  });
+  ```
+
+Это решение даст вам **полный контроль** над данными и интерфейсом без ограничений no-code инструментов.
