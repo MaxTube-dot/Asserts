@@ -1,135 +1,80 @@
-Понял! Для автоматического подхвата таблиц из PostgreSQL **без явного объявления сущностей** используйте следующий подход:
+Вот готовый `docker-compose.yml` для быстрого запуска **Metabase** вместе с **PostgreSQL** (если у вас уже есть своя БД, можно убрать сервис `postgres`):
 
----
+```yaml
+version: '3.8'
 
-## **Решение с автоматическим сканированием БД**
+services:
+  # Основной сервис Metabase
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    ports:
+      - "3000:3000"  # Web-интерфейс будет доступен на http://localhost:3000
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase
+      MB_DB_PORT: 5432
+      MB_DB_USER: metabase
+      MB_DB_PASS: metabase
+      MB_DB_HOST: postgres
+    depends_on:
+      - postgres
+    networks:
+      - metanet
+    restart: unless-stopped
 
-### 1. Обновите `adminjs/app.js`:
-```javascript
-const AdminJS = require('adminjs')
-const AdminJSExpress = require('@adminjs/express')
-const AdminJSSequelize = require('@adminjs/sequelize')
-const { Sequelize } = require('sequelize')
-const express = require('express')
+  # PostgreSQL для хранения данных Metabase (если не используете внешнюю БД)
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    environment:
+      POSTGRES_USER: metabase
+      POSTGRES_PASSWORD: metabase
+      POSTGRES_DB: metabase
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - metanet
+    restart: unless-stopped
 
-// 1. Подключаемся к PostgreSQL через Sequelize (без моделей!)
-const sequelize = new Sequelize(process.env.DATABASE_URL, {
-  dialect: 'postgres',
-  logging: false
-})
+# Сеть и volume для хранения данных
+networks:
+  metanet:
+    driver: bridge
 
-// 2. Регистрируем адаптер Sequelize
-AdminJS.registerAdapter({
-  Resource: AdminJSSequelize.Resource,
-  Database: AdminJSSequelize.Database,
-})
-
-// 3. Автоматически получаем все таблицы из БД
-const getTables = async () => {
-  const query = `
-    SELECT table_name 
-    FROM information_schema.tables 
-    WHERE table_schema = 'public' 
-    AND table_type = 'BASE TABLE'
-  `
-  const [tables] = await sequelize.query(query)
-  return tables.map(t => t.table_name)
-}
-
-// 4. Создаем AdminJS с динамическими ресурсами
-const initAdminJS = async () => {
-  const tables = await getTables()
-  
-  const adminJs = new AdminJS({
-    databases: [sequelize],
-    resources: tables.map(tableName => ({
-      resource: { model: sequelize.models[tableName] || tableName, client: sequelize },
-      options: { 
-        properties: {
-          // Скрываем технические поля
-          createdAt: { isVisible: false },
-          updatedAt: { isVisible: false }
-        }
-      }
-    })),
-    rootPath: '/admin'
-  })
-
-  const app = express()
-  app.use(adminJs.options.rootPath, AdminJSExpress.buildRouter(adminJs))
-  app.listen(3000, () => {
-    console.log(`AdminJS запущен на http://localhost:3000/admin`)
-    console.log(`Доступные таблицы: ${tables.join(', ')}`)
-  })
-}
-
-initAdminJS()
+volumes:
+  postgres_data:
 ```
 
-### 2. Обновите зависимости (`adminjs/package.json`):
-```json
-{
-  "dependencies": {
-    "adminjs": "^6.8.0",
-    "@adminjs/express": "^5.0.0",
-    "@adminjs/sequelize": "^2.0.0",
-    "sequelize": "^6.35.0",
-    "pg": "^8.11.0",
-    "express": "^4.18.2"
-  }
-}
-```
+### **Как использовать:**
+1. Сохраните этот код в файл `docker-compose.yml`.
+2. Запустите командой:
+   ```bash
+   docker-compose up -d
+   ```
+3. Откройте в браузере: [http://localhost:3000](http://localhost:3000).
+4. При первом запуске:
+   - Создайте админ-аккаунт.
+   - Подключите свою **PostgreSQL БД с данными из Dynamics CRM** (если не используете встроенную `postgres` из этого файла).
 
-### 3. Пересоберите контейнер:
-```bash
-docker-compose build adminjs
-docker-compose up -d
-```
+### **Если у вас уже есть PostgreSQL с данными:**
+1. Удалите сервис `postgres` из `docker-compose.yml`.
+2. В сервисе `metabase` измените переменные окружения:
+   ```yaml
+   environment:
+     MB_DB_TYPE: postgres
+     MB_DB_DBNAME: your_database_name
+     MB_DB_PORT: 5432
+     MB_DB_USER: your_username
+     MB_DB_PASS: your_password
+     MB_DB_HOST: your_postgres_host  # Например, IP или домен БД
+   ```
 
----
+### **Дополнительно:**
+- Если Metabase нужно подключить к **существующей БД**, укажите её параметры вместо `postgres` в `environment`.
+- Для продакшена настройте **TLS (HTTPS)** и бэкапы.
 
-## **Как это работает?**
-1. **Sequelize** автоматически сканирует структуру PostgreSQL и создает модели для всех таблиц.
-2. **AdminJS** подхватывает эти модели через адаптер `@adminjs/sequelize`.
-3. Динамически создаются ресурсы для каждой таблицы.
-
----
-
-## **Дополнительные настройки**
-### Чтобы скрыть конкретные поля:
-```javascript
-resources: tables.map(tableName => ({
-  resource: { model: sequelize.models[tableName], client: sequelize },
-  options: {
-    properties: {
-      password: { isVisible: false }, // Скрыть поле 'password'
-      secret_field: { isVisible: false }
-    }
-  }
-}))
-```
-
-### Для кастомизации интерфейса:
-```javascript
-new AdminJS({
-  branding: {
-    companyName: 'My Auto-CRM',
-    logo: '/logo.png'
-  },
-  dashboard: {
-    handler: async () => {
-      return { someStats: 42 }
-    },
-    component: AdminJS.bundle('./my-dashboard-component')
-  }
-})
-```
-
----
-
-## **Почему это лучше?**
-- **Нет ручного объявления сущностей** — таблицы подхватываются автоматически.
-- **Поддержка всех типов полей** (JSON, массивы, связи).
-- **Гибкая настройка видимости** колонок.
-
-После перезапуска контейнера все ваши таблицы из PostgreSQL появятся в AdminJS без явного описания моделей!
+После запуска вы сможете:
+- Назначать "человеческие" названия таблицам и полям.
+- Строить дашборды с фильтрами.
+- Настраивать связи между таблицами для навигации.
