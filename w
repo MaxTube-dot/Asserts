@@ -1,80 +1,82 @@
-Вот готовый `docker-compose.yml` для быстрого запуска **Metabase** вместе с **PostgreSQL** (если у вас уже есть своя БД, можно убрать сервис `postgres`):
+Добавим инициализацию PostgreSQL с помощью SQL-скрипта. Вот обновлённый `docker-compose.yml`:
 
 ```yaml
 version: '3.8'
 
 services:
-  # Основной сервис Metabase
-  metabase:
-    image: metabase/metabase:latest
-    container_name: metabase
-    ports:
-      - "3000:3000"  # Web-интерфейс будет доступен на http://localhost:3000
-    environment:
-      MB_DB_TYPE: postgres
-      MB_DB_DBNAME: metabase
-      MB_DB_PORT: 5432
-      MB_DB_USER: metabase
-      MB_DB_PASS: metabase
-      MB_DB_HOST: postgres
-    depends_on:
-      - postgres
-    networks:
-      - metanet
-    restart: unless-stopped
-
-  # PostgreSQL для хранения данных Metabase (если не используете внешнюю БД)
-  postgres:
+  db:
     image: postgres:13
-    container_name: postgres
     environment:
-      POSTGRES_USER: metabase
-      POSTGRES_PASSWORD: metabase
-      POSTGRES_DB: metabase
+      POSTGRES_DB: baserow
+      POSTGRES_USER: baserow
+      POSTGRES_PASSWORD: baserow
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    networks:
-      - metanet
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     restart: unless-stopped
+    networks:
+      - baserow_network
 
-# Сеть и volume для хранения данных
-networks:
-  metanet:
-    driver: bridge
+  baserow:
+    image: baserow/baserow:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      BASEROW_PUBLIC_URL: http://localhost:80
+      DATABASE_URL: postgres://baserow:baserow@db:5432/baserow
+    ports:
+      - "80:80"
+    volumes:
+      - baserow_data:/baserow/data
+    restart: unless-stopped
+    networks:
+      - baserow_network
 
 volumes:
   postgres_data:
+  baserow_data:
+
+networks:
+  baserow_network:
+    driver: bridge
+
+healthcheck:
+  db:
+    test: ["CMD-SHELL", "pg_isready -U baserow -d baserow"]
+    interval: 5s
+    timeout: 5s
+    retries: 5
 ```
 
-### **Как использовать:**
-1. Сохраните этот код в файл `docker-compose.yml`.
-2. Запустите командой:
-   ```bash
-   docker-compose up -d
-   ```
-3. Откройте в браузере: [http://localhost:3000](http://localhost:3000).
-4. При первом запуске:
-   - Создайте админ-аккаунт.
-   - Подключите свою **PostgreSQL БД с данными из Dynamics CRM** (если не используете встроенную `postgres` из этого файла).
+### Что изменилось:
+1. Добавлен healthcheck для PostgreSQL, чтобы Baserow запускался только после готовности БД
+2. Добавлено монтирование SQL-скрипта в `/docker-entrypoint-initdb.d/`
 
-### **Если у вас уже есть PostgreSQL с данными:**
-1. Удалите сервис `postgres` из `docker-compose.yml`.
-2. В сервисе `metabase` измените переменные окружения:
-   ```yaml
-   environment:
-     MB_DB_TYPE: postgres
-     MB_DB_DBNAME: your_database_name
-     MB_DB_PORT: 5432
-     MB_DB_USER: your_username
-     MB_DB_PASS: your_password
-     MB_DB_HOST: your_postgres_host  # Например, IP или домен БД
-   ```
+### Как добавить SQL-скрипт:
+1. Создайте файл `init.sql` в той же директории, где находится `docker-compose.yml`
+2. Добавьте в него нужные SQL-команды, например:
 
-### **Дополнительно:**
-- Если Metabase нужно подключить к **существующей БД**, укажите её параметры вместо `postgres` в `environment`.
-- Для продакшена настройте **TLS (HTTPS)** и бэкапы.
+```sql
+-- Пример init.sql
+CREATE SCHEMA IF NOT EXISTS baserow_schema;
 
-После запуска вы сможете:
-- Назначать "человеческие" названия таблицам и полям.
-- Строить дашборды с фильтрами.
-- Настраивать связи между таблицами для навигации.
+-- Создание дополнительных таблиц (если нужно)
+CREATE TABLE IF NOT EXISTS baserow_schema.example_table (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Можно добавить начальные данные
+INSERT INTO baserow_schema.example_table (name) VALUES ('Initial Data');
+```
+
+### Важные моменты:
+1. Файл `init.sql` выполняется только при первом запуске контейнера с пустым volume
+2. Для повторного выполнения скрипта нужно:
+   - Удалить volume: `docker-compose down -v`
+   - Запустить заново: `docker-compose up -d`
+3. Baserow сам создаёт нужные ему таблицы, поэтому обычно в `init.sql` добавляют только кастомные объекты БД
+
+Хотите, чтобы я добавил что-то конкретное в SQL-скрипт или изменил логику инициализации?
