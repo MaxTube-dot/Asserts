@@ -1,1 +1,107 @@
-H2DUV1H09D-eyJsaWNlbnNlSWQiOiJIMkRVVjFIMDlEIiwibGljZW5zZWVOYW1lIjoi0JjQu9GM0Y8g0JvQtdCy0LjQvSIsImxpY2Vuc2VlVHlwZSI6IlBFUlNPTkFMIiwiYXNzaWduZWVOYW1lIjoiIiwiYXNzaWduZWVFbWFpbCI6IiIsImxpY2Vuc2VSZXN0cmljdGlvbiI6IiIsImNoZWNrQ29uY3VycmVudFVzZSI6ZmFsc2UsInByb2R1Y3RzIjpbeyJjb2RlIjoiR08iLCJwYWlkVXBUbyI6IjIwMjMtMDMtMjYiLCJleHRlbmRlZCI6ZmFsc2V9LHsiY29kZSI6IlJTMCIsInBhaWRVcFRvIjoiMjAyMy0wMy0yNiIsImV4dGVuZGVkIjpmYWxzZX0seyJjb2RlIjoiRE0iLCJwYWlkVXBUbyI6IjIwMjMtMDMtMjYiLCJleHRlbmRlZCI6ZmFsc2V9LHsiY29kZSI6IkNMIiwicGFpZFVwVG8iOiIyMDIzLTAzLTI2IiwiZXh0ZW5kZWQiOmZhbHNlfSx7ImNvZGUiOiJBQyIsImZhbGxiYWNrRGF0ZSI6IjIwMjMtMTItMzEiLCJwYWlkVXBUbyI6IjIwMjItMTEtMjAiLCJleHRlbmRlZCI6ZmFsc2V9LHsiY29kZSI6IlJTVSIsInBhaWRVcFRvIjoiMjAyMy0wMy0yNiIsImV4dGVuZGVkIjpmYWxzZX0seyJjb2RlIjoiUlNDIiwicGFpZFVwVG8iOiIyMDIzLTAzLTI2IiwiZXh0ZW5kZWQiOnRydWV9LHsiY29kZSI6IlBDIiwicGFpZFVwVG8iOiIyMDIzLTAzLTI2IiwiZXh0ZW5kZWQiOmZhbHNlfSx7ImNvZGUiOiJEUyIsInBhaWRVcFRvIjoiMjAyMy0wMy0yNiIsImV4dGVuZGVkIjpmYWxzZX0seyJjb2RlIjoiUkQiLCJwYWlkVXBUbyI6IjIwMjMtMDMtMjYiLCJleHRlbmRlZCI6ZmFsc2V9LHsiY29kZSI6IlJDIiwicGFpZFVwVG8iOiIyMDIzLTAzLTI2IiwiZXh0ZW5kZWQiOmZhbHNlfSx7ImNvZGUiOiJSU0YiLCJwYWlkVXBUbyI6IjIwMjMtMDMtMjYiLCJleHRlbmRlZCI6dHJ1ZX0seyJjb2RlIjoiUk0iLCJwYWlkVXBUbyI6IjIwMjMtMDMtMjYiLCJleHRlbmRlZCI6ZmFsc2V9LHsiY29kZSI6IklJIiwicGFpZFVwVG8iOiIyMDIzLTAzLTI2IiwiZXh0ZW5kZWQiOmZhbHNlfSx7ImNvZGUiOiJEUE4iLCJwYWlkVXBUbyI6IjIwMjMtMDMtMjYiLCJleHRlbmRlZCI6ZmFsc2V9LHsiY29kZSI6IkRCIiwicGFpZFVwVG8iOiIyMDIzLTAzLTI2IiwiZXh0ZW5kZWQiOmZhbHNlfSx7ImNvZGUiOiJEQyIsInBhaWRVcFRvIjoiMjAyMy0wMy0yNiIsImV4dGVuZGVkIjpmYWxzZX0seyJjb2RlIjoiUFMiLCJwYWlkVXBUbyI6IjIwMjMtMDMtMjYiLCJleHRlbmRlZCI6ZmFsc2V9LHsiY29kZSI6IlJSIiwicGFpZFVwVG8iOiIyMDIzLTAzLTI2IiwiZXh0ZW5kZWQiOmZhbHNlfSx7ImNvZGUiOiJSU1YiLCJwYWlkVXBUbyI6IjIwMjMtMDMtMjYiLCJleHRlbmRlZCI6dHJ1ZX0seyJjb2RlIjoiV1MiLCJmYWxsYmFja0RhdGUiOiIyMDIzLTA0LTEwIiwicGFpZFVwVG8iOiIyMDI0LTA0LTA5IiwiZXh0ZW5kZWQiOmZhbHNlfSx7ImNvZGUiOiJQU0kiLCJmYWxsYmFja0RhdGUiOiIyMDIzLTEyLTMxIiwicGFpZFVwVG8iOiIyMDI0LTA0LTA5IiwiZXh0ZW5kZWQiOnRydWV9LHsiY29kZSI6IlBDV01QIiwicGFpZFVwVG8iOiIyMDI0LTA0LTA5IiwiZXh0ZW5kZWQiOnRydWV9LHsiY29kZSI6IkFJTCIsInBhaWRVcFRvIjoiMjAyNC0wNC0wOSIsImV4dGVuZGVkIjpmYWxzZX0seyJjb2RlIjoiQUlGIiwicGFpZFVwVG8iOiIyMDI0LTA0LTA5IiwiZXh0ZW5kZWQiOmZhbHNlfSx7ImNvZGUiOiJSUyIsInBhaWRVcFRvIjoiMjAyMy0wMy0yNiIsImV4dGVuZGVkIjp0cnVlfSx7ImNvZGUiOiJQUlIiLCJwYWlkVXBUbyI6IjIwMjMtMDMtMjYiLCJleHRlbmRlZCI6dHJ1ZX0seyJjb2RlIjoiRFAiLCJwYWlkVXBUbyI6IjIwMjMtMDMtMjYiLCJleHRlbmRlZCI6dHJ1ZX0seyJjb2RlIjoiUERCIiwiZmFsbGJhY2tEYXRlIjoiMjAyMy0wNC0xMCIsInBhaWRVcFRvIjoiMjAyNC0wNC0wOSIsImV4dGVuZGVkIjp0cnVlfV0sIm1ldGFkYXRhIjoiMDIyMDI1MDUwN1BTQU4wMTAtMDlYIiwiaGFzaCI6IjQ0Mjg5Mjc3LzA6Nzc3MTYzNDkwIiwiZ3JhY2VQZXJpb2REYXlzIjoxLCJhdXRvUHJvbG9uZ2F0ZWQiOmZhbHNlLCJpc0F1dG9Qcm9sb25nYXRlZCI6ZmFsc2UsInRyaWFsIjpmYWxzZSwiYWlBbGxvd2VkIjp0cnVlfQ==-WzLpE8PpVdkRyAd9jcR+ferC+/qR3/6PmLz86MTj+nl2PLbu/eHj/RRi7nJxOO252tSDMWKv3d9OH77sJ4QJL8RgC8m/aHgozBgqQU8oy0/8K1AgkCkjfFl8ZMgF8DwRbV2RSdU0wLVoYq4sIdBkkX/k/MYNjrtLsjuVSKzG6CFx7HCtXVHOqUwgBMC/VgJztXPrg3BlkLprtiSyCuM9aUFf8dvpRBp/JPbF3PJLdob1b4lmFVwPwd7og/DXC8B7MPsObuUiP7fUR53s/7KfcRMFHraepeTQzTaRXXNZZHaqFnUWNNgaggVSiuvbbOZmnV9yQAZmO2NSZdMQz3w7Ug==-MIIETDCCAjSgAwIBAgIBETANBgkqhkiG9w0BAQsFADAYMRYwFAYDVQQDDA1KZXRQcm9maWxlIENBMB4XDTI0MDkyMDEyMTEyN1oXDTI2MDkyMjEyMTEyN1owHzEdMBsGA1UEAwwUcHJvZDJ5LWZyb20tMjAyNDA5MjAwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC7SH/XcUoMwkDi8JJPzXWWHWFdOZdrP2Dqkz2W8iUi650cwz2vdPEd0tMzosLAj7ifkFEHUyiuEcL//q9d9Op7ZsV23lpPXX8tFMLFwugoQ9D8jDLT/XP9pp/YukWkKF5jpNbaCvsVQkDdYkArBkYvhH3aN4v9BkEsXahfgLLOPe4IG2FDJNf9R4to9V1vt+m2UVJB0zV4a/sVMKUZLgqKmKKKOKoLrE3OjBlZlb+Q0z2N5dsW0hDEVRFGmBUAbHN/mp44MMMvEIFKfoLIGpgic92P2O6uFh75PI7mcultL6yuR48ajErx8CjjQEGOSnoq/8hD+yVE+6GW2gJa2CPvAgMBAAGjgZkwgZYwCQYDVR0TBAIwADAdBgNVHQ4EFgQUb5NERj05GyNerQ/Mjm9XH8HXtLIwSAYDVR0jBEEwP4AUo562SGdCEjZBvW3gubSgUouX8bOhHKQaMBgxFjAUBgNVBAMMDUpldFByb2ZpbGUgQ0GCCQDSbLGDsoN54TATBgNVHSUEDDAKBggrBgEFBQcDATALBgNVHQ8EBAMCBaAwDQYJKoZIhvcNAQELBQADggIBALq6VfVUjmPI3N/w0RYoPGFYUieCfRO0zVvD1VYHDWsN3F9buVsdudhxEsUb8t7qZPkDKTOB6DB+apgt2ZdKwok8S0pwifwLfjHAhO3b+LUQaz/VmKQW8gTOS5kTVcpM0BY7UPF8cRBqxMsdUfm5ejYk93lBRPBAqntznDY+DNc9aXOldFiACyutB1/AIh7ikUYPbpEIPZirPdAahroVvfp2tr4BHgCrk9z0dVi0tk8AHE5t7Vk4OOaQRJzy3lST4Vv6Mc0+0z8lNa+Sc3SVL8CrRtnTAs7YpD4fpI5AFDtchNrgFalX+BZ9GLu4FDsshVI4neqV5Jd5zwWPnwRuKLxsCO/PB6wiBKzdapQBG+P9z74dQ0junol+tqxd7vUV/MFsR3VwVMTndyapIS+fMoe+ZR5g+y44R8C7fXyVE/geg+JXQKvRwS0C5UpnS5FcGk+61b0e4U7pwO20RlwhEFHLSaP61p2TaVGo/TQtT/fWmrtV+HegAv9P3X3Se+xIVtJzQsk8QrB/w52IB3FKiAKl/KRn1egbMIs4uoNAkqNZ9Ih2P1NpiQnONFmkiAgeynJ+0FPykKdJQbV3Mx44jkaHIif4aFReTsYX1WUBNu/QerZRjn4FVSHRaZPSR5Oi82Wz0Nj7IY9ocTpLnXFrqkb/Kt3S6B9s2Kol3Lr1El
+Да, для работы с **PostgREST** из **Angular** можно использовать следующие подходы и библиотеки:
+
+### 1. **HttpClient (Нативный способ)**
+   Поскольку PostgREST предоставляет RESTful API, вы можете использовать стандартный `HttpClient` из Angular для отправки запросов.
+
+   **Пример:**
+   ```typescript
+   import { HttpClient, HttpHeaders } from '@angular/common/http';
+   import { Injectable } from '@angular/core';
+
+   @Injectable({
+     providedIn: 'root'
+   })
+   export class PostgrestService {
+     private apiUrl = 'http://your-postgrest-server';
+
+     constructor(private http: HttpClient) {}
+
+     getData() {
+       return this.http.get(`${this.apiUrl}/your_table`);
+     }
+
+     insertData(data: any) {
+       return this.http.post(`${this.apiUrl}/your_table`, data);
+     }
+
+     updateData(id: number, data: any) {
+       return this.http.patch(`${this.apiUrl}/your_table?id=eq.${id}`, data);
+     }
+
+     deleteData(id: number) {
+       return this.http.delete(`${this.apiUrl}/your_table?id=eq.${id}`);
+     }
+   }
+   ```
+
+   **Преимущества:**
+   - Полный контроль над запросами.
+   - Не требует дополнительных зависимостей.
+
+### 2. **Специализированные библиотеки**
+   Есть несколько библиотек, которые упрощают работу с PostgREST:
+
+#### **a) `@supabase/supabase-js` (рекомендуется)**
+   Supabase использует PostgREST под капотом и предоставляет удобный клиент для Angular.
+
+   **Установка:**
+   ```bash
+   npm install @supabase/supabase-js
+   ```
+
+   **Пример:**
+   ```typescript
+   import { createClient } from '@supabase/supabase-js';
+
+   const supabase = createClient('https://your-project.supabase.co', 'your-anon-key');
+
+   // Получение данных
+   const { data, error } = await supabase
+     .from('your_table')
+     .select('*');
+
+   // Вставка данных
+   const { data, error } = await supabase
+     .from('your_table')
+     .insert([{ name: 'John' }]);
+   ```
+
+   **Преимущества:**
+   - Поддержка TypeScript.
+   - Встроенная аутентификация (JWT).
+   - Поддержка реального времени (Realtime API).
+
+#### **b) `postgrest-js`**
+   Это официальный клиент PostgREST от создателей PostgREST.
+
+   **Установка:**
+   ```bash
+   npm install @supabase/postgrest-js
+   ```
+
+   **Пример:**
+   ```typescript
+   import { PostgrestClient } from '@supabase/postgrest-js';
+
+   const client = new PostgrestClient('http://your-postgrest-server');
+
+   const { data, error } = await client
+     .from('your_table')
+     .select('*');
+   ```
+
+   **Преимущества:**
+   - Легковесный.
+   - Прямая работа с PostgREST.
+
+### 3. **GraphQL-обёртки (если нужно)**
+   Если вам удобнее работать с GraphQL, можно использовать:
+   - **Hasura** (преобразует PostgREST в GraphQL).
+   - **PostGraphile** (автоматически генерирует GraphQL API из PostgreSQL).
+
+### **Вывод:**
+- Если вам нужен **простой и нативный** способ — используйте `HttpClient`.
+- Если нужен **удобный клиент с расширенными возможностями** — выбирайте `@supabase/supabase-js`.
+- Если нужен **минималистичный клиент PostgREST** — `postgrest-js`.
+
+Какой вариант вам больше подходит? 😊
