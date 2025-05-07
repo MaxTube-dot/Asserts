@@ -1,163 +1,262 @@
-using System;
-using System.Net.Http;
-using System.Threading.Tasks;
+Вот модифицированное решение для WebAPI приложения, которое включает:
+
+1. Генерацию DTO классов
+2. Настройку DI для работы с PostgREST
+3. Пример контроллера
+
+### 1. Установите необходимые NuGet пакеты:
+
+```bash
+dotnet add package Microsoft.OpenApi --version 1.2.3
+dotnet add package Newtonsoft.Json --version 13.0.3
+dotnet add package System.Text.Json --version 6.0.0
+dotnet add package Microsoft.Extensions.Http --version 6.0.0
+```
+
+### 2. Код для WebAPI приложения:
+
+#### `Program.cs` (или `Startup.cs` для .NET 5)
+
+```csharp
 using Microsoft.OpenApi.Models;
 using Microsoft.OpenApi.Readers;
-using System.Linq;
-using System.Collections.Generic;
+using System.Net.Http;
 
-class Program
+var builder = WebApplication.CreateBuilder(args);
+
+// Добавляем HttpClient для работы с PostgREST
+builder.Services.AddHttpClient("Postgrest", client =>
 {
-    static async Task Main(string[] args)
+    client.BaseAddress = new Uri(builder.Configuration["Postgrest:BaseUrl"] ?? "http://localhost:3000");
+});
+
+// Регистрируем сервис для работы с DTO
+builder.Services.AddSingleton<IDtoGenerator, DtoGenerator>();
+
+// Добавляем контроллеры
+builder.Services.AddControllers();
+
+// Настройка Swagger
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();
+```
+
+#### `DtoGenerator.cs` (Сервис для генерации DTO)
+
+```csharp
+using Microsoft.OpenApi.Models;
+using System.Text;
+
+public interface IDtoGenerator
+{
+    Task<string> GenerateDtoClass(string entityName);
+    Task<IEnumerable<string>> GetAllEntityNames();
+}
+
+public class DtoGenerator : IDtoGenerator
+{
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IConfiguration _configuration;
+
+    public DtoGenerator(IHttpClientFactory httpClientFactory, IConfiguration configuration)
     {
-        // URL к OpenAPI спецификации PostgREST
-        string openApiUrl = "http://localhost:3000/openapi.json";
-        
-        // Загружаем OpenAPI спецификацию
-        var openApiDocument = await LoadOpenApiDocument(openApiUrl);
-        
-        if (openApiDocument != null)
-        {
-            // Анализируем сущности и связи
-            AnalyzeDatabaseEntities(openApiDocument);
-        }
+        _httpClientFactory = httpClientFactory;
+        _configuration = configuration;
     }
 
-    static async Task<OpenApiDocument> LoadOpenApiDocument(string url)
+    public async Task<IEnumerable<string>> GetAllEntityNames()
     {
-        using var httpClient = new HttpClient();
+        var document = await LoadOpenApiDocument();
+        return document?.Components.Schemas.Keys ?? Enumerable.Empty<string>();
+    }
+
+    public async Task<string> GenerateDtoClass(string entityName)
+    {
+        var document = await LoadOpenApiDocument();
+        if (document == null || !document.Components.Schemas.TryGetValue(entityName, out var schema))
+        {
+            return null;
+        }
+
+        return GenerateClassCode(entityName, schema);
+    }
+
+    private async Task<OpenApiDocument> LoadOpenApiDocument()
+    {
+        var client = _httpClientFactory.CreateClient("Postgrest");
         try
         {
-            var stream = await httpClient.GetStreamAsync(url);
+            var response = await client.GetStreamAsync("/openapi.json");
             var openApiReader = new OpenApiStreamReader();
-            var readResult = openApiReader.Read(stream, out var diagnostic);
-            
-            if (diagnostic.Errors.Count > 0)
-            {
-                Console.WriteLine("Ошибки при чтении OpenAPI:");
-                foreach (var error in diagnostic.Errors)
-                {
-                    Console.WriteLine($"- {error.Message}");
-                }
-            }
-            
-            return readResult;
+            return openApiReader.Read(response, out _);
         }
-        catch (Exception ex)
+        catch
         {
-            Console.WriteLine($"Ошибка при загрузке OpenAPI: {ex.Message}");
             return null;
         }
     }
 
-    static void AnalyzeDatabaseEntities(OpenApiDocument document)
+    private string GenerateClassCode(string className, OpenApiSchema schema)
     {
-        Console.WriteLine("=== Анализ сущностей БД ===");
+        var sb = new StringBuilder();
         
-        // Получаем все пути (эндпоинты API), которые соответствуют таблицам
-        var entityPaths = document.Paths
-            .Where(p => p.Key.StartsWith("/") && p.Key.Count(c => c == '/') == 1)
-            .ToList();
-        
-        // Собираем информацию о сущностях
-        var entities = new Dictionary<string, EntityInfo>();
-        
-        foreach (var path in entityPaths)
+        sb.AppendLine("using System;");
+        sb.AppendLine("using System.Text.Json.Serialization;");
+        sb.AppendLine();
+        sb.AppendLine("namespace YourProject.DTOs");
+        sb.AppendLine("{");
+        sb.AppendLine($"    public class {ToPascalCase(className)}");
+        sb.AppendLine("    {");
+
+        foreach (var property in schema.Properties)
         {
-            var entityName = path.Key.Trim('/');
-            var entityInfo = new EntityInfo
-            {
-                Name = entityName,
-                Columns = new List<ColumnInfo>(),
-                Relations = new List<RelationInfo>()
-            };
-            
-            // Получаем схему для этой сущности
-            var schema = document.Components.Schemas
-                .FirstOrDefault(s => s.Key.Equals(entityName, StringComparison.OrdinalIgnoreCase)).Value;
-            
-            if (schema != null)
-            {
-                // Анализируем свойства (колонки)
-                foreach (var property in schema.Properties)
-                {
-                    var columnInfo = new ColumnInfo
-                    {
-                        Name = property.Key,
-                        Type = MapOpenApiTypeToDbType(property.Value.Type),
-                        IsRequired = schema.Required.Contains(property.Key)
-                    };
-                    
-                    entityInfo.Columns.Add(columnInfo);
-                    
-                    // Проверяем, является ли это поле внешним ключом (по соглашению *_id)
-                    if (property.Key.EndsWith("_id") && property.Value.Type == "integer")
-                    {
-                        var relatedEntity = property.Key[..^3]; // убираем "_id" в конце
-                        entityInfo.Relations.Add(new RelationInfo
-                        {
-                            Type = "Many-to-One",
-                            TargetEntity = relatedEntity,
-                            ForeignKey = property.Key
-                        });
-                    }
-                }
-            }
-            
-            entities.Add(entityName, entityInfo);
+            sb.AppendLine("        [JsonPropertyName(\"" + property.Key + "\")]");
+            sb.AppendLine($"        public {MapOpenApiTypeToCSharpType(property.Value)} {ToPascalCase(property.Key)} {{ get; set; }}");
+            sb.AppendLine();
         }
+
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
         
-        // Выводим результаты анализа
-        foreach (var entity in entities.Values)
-        {
-            Console.WriteLine($"\nСущность: {entity.Name}");
-            Console.WriteLine("Колонки:");
-            foreach (var column in entity.Columns)
-            {
-                Console.WriteLine($"- {column.Name}: {column.Type} {(column.IsRequired ? "(NOT NULL)" : "")}");
-            }
-            
-            if (entity.Relations.Any())
-            {
-                Console.WriteLine("Связи:");
-                foreach (var relation in entity.Relations)
-                {
-                    Console.WriteLine($"- {relation.Type} с {relation.TargetEntity} (FK: {relation.ForeignKey})");
-                }
-            }
-        }
+        return sb.ToString();
     }
-    
-    static string MapOpenApiTypeToDbType(string openApiType)
+
+    private string MapOpenApiTypeToCSharpType(OpenApiSchema schema)
     {
-        return openApiType switch
-        {
-            "integer" => "INTEGER",
-            "number" => "NUMERIC",
-            "string" => "TEXT",
-            "boolean" => "BOOLEAN",
-            _ => openApiType?.ToUpper() ?? "UNKNOWN"
-        };
+        // Реализация как в предыдущем примере
+    }
+
+    private string ToPascalCase(string input)
+    {
+        // Реализация как в предыдущем примере
     }
 }
+```
 
-class EntityInfo
-{
-    public string Name { get; set; }
-    public List<ColumnInfo> Columns { get; set; }
-    public List<RelationInfo> Relations { get; set; }
-}
+#### `EntitiesController.cs` (Пример контроллера)
 
-class ColumnInfo
-{
-    public string Name { get; set; }
-    public string Type { get; set; }
-    public bool IsRequired { get; set; }
-}
+```csharp
+using Microsoft.AspNetCore.Mvc;
 
-class RelationInfo
+[ApiController]
+[Route("api/[controller]")]
+public class EntitiesController : ControllerBase
 {
-    public string Type { get; set; }
-    public string TargetEntity { get; set; }
-    public string ForeignKey { get; set; }
+    private readonly IDtoGenerator _dtoGenerator;
+
+    public EntitiesController(IDtoGenerator dtoGenerator)
+    {
+        _dtoGenerator = dtoGenerator;
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> GetAllEntities()
+    {
+        var entities = await _dtoGenerator.GetAllEntityNames();
+        return Ok(entities);
+    }
+
+    [HttpGet("{entityName}/dto")]
+    public async Task<IActionResult> GetDtoForEntity(string entityName)
+    {
+        var dtoCode = await _dtoGenerator.GenerateDtoClass(entityName);
+        if (dtoCode == null)
+        {
+            return NotFound();
+        }
+        return Content(dtoCode, "text/plain");
+    }
 }
+```
+
+#### `PostgrestController.cs` (Пример контроллера для работы с PostgREST)
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+using System.Net.Http;
+
+[ApiController]
+[Route("api/[controller]")]
+public class PostgrestController : ControllerBase
+{
+    private readonly IHttpClientFactory _httpClientFactory;
+
+    public PostgrestController(IHttpClientFactory httpClientFactory)
+    {
+        _httpClientFactory = httpClientFactory;
+    }
+
+    [HttpGet("{entity}")]
+    public async Task<IActionResult> GetEntities(string entity)
+    {
+        var client = _httpClientFactory.CreateClient("Postgrest");
+        var response = await client.GetAsync($"/{entity}");
+        
+        if (!response.IsSuccessStatusCode)
+        {
+            return StatusCode((int)response.StatusCode);
+        }
+
+        var content = await response.Content.ReadAsStringAsync();
+        return Content(content, "application/json");
+    }
+}
+```
+
+### 3. Настройка в `appsettings.json`
+
+```json
+{
+  "Postgrest": {
+    "BaseUrl": "http://localhost:3000"
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
+}
+```
+
+### Как это работает:
+
+1. **Генерация DTO**:
+   - Сервис `DtoGenerator` загружает OpenAPI спецификацию
+   - Преобразует схемы в C# DTO классы
+   - Доступ через `/api/entities/{entityName}/dto`
+
+2. **Доступ к PostgREST**:
+   - Контроллер `PostgrestController` проксирует запросы к PostgREST
+   - Например: `/api/postgrest/users` → `http://localhost:3000/users`
+
+3. **Интеграция**:
+   - Использует стандартный HttpClient с DI
+   - Поддерживает Swagger для документации API
+
+### Дополнительные улучшения:
+
+1. Добавьте кэширование OpenAPI спецификации
+2. Реализуйте авторизацию для PostgREST
+3. Добавьте валидацию DTO
+4. Реализуйте пагинацию для запросов
+
+Это решение дает вам:
+- Генерацию DTO на лету
+- Прокси к PostgREST API
+- Полностью интегрированное решение в ваше WebAPI приложение
