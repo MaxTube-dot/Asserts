@@ -5,7 +5,7 @@ services:
     image: postgres:13
     environment:
       POSTGRES_DB: tooljet_db
-      POSTGRES_USER: tooljet_db_user  # Именно такое имя ожидает ToolJet
+      POSTGRES_USER: tooljet_db_user
       POSTGRES_PASSWORD: tooljet_db_password
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tooljet_db_user -d tooljet_db"]
@@ -17,9 +17,9 @@ services:
 
   redis:
     image: redis:6-alpine
-    command: redis-server --requirepass redis_password
+    command: redis-server --requirepass your_redis_password
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "redis_password", "ping"]
+      test: ["CMD", "redis-cli", "-a", "your_redis_password", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -34,24 +34,24 @@ services:
       redis:
         condition: service_healthy
     environment:
-      # Обязательные параметры БД (новые названия!)
-      - TOOLJET_DB_HOST=postgres
-      - TOOLJET_DB_PORT=5432
-      - TOOLJET_DB_USER=tooljet_db_user  # Должен совпадать с POSTGRES_USER
-      - TOOLJET_DB_PASSWORD=tooljet_db_password
-      - TOOLJET_DB_NAME=tooljet_db
-      - TOOLJET_DB_SSL=false
+      # Database
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=tooljet_db_user
+      - DB_PASSWORD=tooljet_db_password
+      - DB_DATABASE=tooljet_db
+      - DB_SSL=false
 
-      # Redis (новый формат)
-      - TOOLJET_REDIS_HOST=redis
-      - TOOLJET_REDIS_PORT=6379
-      - TOOLJET_REDIS_PASSWORD=redis_password
+      # Redis
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=your_redis_password
 
-      # Системные настройки
-      - TOOLJET_HOST=0.0.0.0
-      - TOOLJET_PORT=3000
-      - SECRET_KEY_BASE=your_secure_key_here  # openssl rand -hex 64
-      - LOCKBOX_MASTER_KEY=your_lockbox_key  # openssl rand -hex 32
+      # App
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=3000
+      - SECRET_KEY_BASE=your_secret_key_base
+      - LOCKBOX_MASTER_KEY=your_lockbox_key
       - NODE_ENV=production
     ports:
       - "3000:3000"
