@@ -5,10 +5,10 @@ services:
     image: postgres:13
     environment:
       POSTGRES_DB: tooljet_db
-      POSTGRES_USER: tooljet_user
-      POSTGRES_PASSWORD: tooljet_password  # На продакшне замените на сложный пароль!
+      POSTGRES_USER: tooljet_db_user  # Именно такое имя ожидает ToolJet
+      POSTGRES_PASSWORD: tooljet_db_password
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tooljet_user -d tooljet_db"]
+      test: ["CMD-SHELL", "pg_isready -U tooljet_db_user -d tooljet_db"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -16,10 +16,10 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
   redis:
-    image: redis:6-alpine  # Используем облегчённый alpine-образ
-    command: redis-server --requirepass redis_password  # Пароль для Redis
+    image: redis:6-alpine
+    command: redis-server --requirepass redis_password
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "redis_password", "ping"]  # Проверка с паролем
+      test: ["CMD", "redis-cli", "-a", "redis_password", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -34,27 +34,30 @@ services:
       redis:
         condition: service_healthy
     environment:
-      # Настройки PostgreSQL
-      - PG_HOST=postgres
-      - PG_PORT=5432
-      - PG_USER=tooljet_user
-      - PG_PASS=tooljet_password
-      - PG_DB_NAME=tooljet_db
+      # Обязательные параметры БД (новые названия!)
+      - TOOLJET_DB_HOST=postgres
+      - TOOLJET_DB_PORT=5432
+      - TOOLJET_DB_USER=tooljet_db_user  # Должен совпадать с POSTGRES_USER
+      - TOOLJET_DB_PASSWORD=tooljet_db_password
+      - TOOLJET_DB_NAME=tooljet_db
+      - TOOLJET_DB_SSL=false
 
-      # Настройки Redis (исправлено!)
-      - REDIS_URL=redis://:redis_password@redis:6379  # Формат URL для подключения
-      
-      # Настройки ToolJet
+      # Redis (новый формат)
+      - TOOLJET_REDIS_HOST=redis
+      - TOOLJET_REDIS_PORT=6379
+      - TOOLJET_REDIS_PASSWORD=redis_password
+
+      # Системные настройки
       - TOOLJET_HOST=0.0.0.0
       - TOOLJET_PORT=3000
-      - SECRET_KEY_BASE=your_secure_key_here  # Обязательно замените!
+      - SECRET_KEY_BASE=your_secure_key_here  # openssl rand -hex 64
+      - LOCKBOX_MASTER_KEY=your_lockbox_key  # openssl rand -hex 32
       - NODE_ENV=production
-      - LOCKBOX_MASTER_KEY=your_lockbox_key_here  # Добавлено для безопасности
     ports:
       - "3000:3000"
     volumes:
       - tooljet_data:/app/storage
-    restart: unless-stopped  # Автоперезапуск при падении
+    restart: unless-stopped
 
 volumes:
   postgres_data:
