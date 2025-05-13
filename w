@@ -1,65 +1,48 @@
-version: '3.8'
+def xor_cipher(text: str, key: str) -> str:
+    """
+    Шифрует или дешифрует текст с помощью XOR-шифрования.
+    
+    :param text: Исходный текст для обработки
+    :param key: Ключ для XOR-шифрования
+    :return: Обработанный текст
+    """
+    # Преобразуем текст и ключ в байты
+    text_bytes = text.encode('utf-8')
+    key_bytes = key.encode('utf-8')
+    
+    # Шифруем/дешифруем каждый байт текста с помощью соответствующего байта ключа
+    result_bytes = bytearray()
+    for i in range(len(text_bytes)):
+        result_bytes.append(text_bytes[i] ^ key_bytes[i % len(key_bytes)])
+    
+    return result_bytes.decode('utf-8', errors='ignore')
 
-services:
-  postgres:
-    image: postgres:13
-    environment:
-      POSTGRES_DB: tooljet_db
-      POSTGRES_USER: tooljet_db_user
-      POSTGRES_PASSWORD: tooljet_db_password
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tooljet_db_user -d tooljet_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
 
-  redis:
-    image: redis:6-alpine
-    command: redis-server --requirepass your_redis_password
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "your_redis_password", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    volumes:
-      - redis_data:/data
+def main():
+    print("XOR Шифровальщик/Дешифровальщик")
+    print("1. Шифровать текст")
+    print("2. Дешифровать текст")
+    
+    choice = input("Выберите действие (1/2): ")
+    
+    if choice not in ['1', '2']:
+        print("Неверный выбор")
+        return
+    
+    text = input("Введите текст: ")
+    key = input("Введите ключ: ")
+    
+    if not key:
+        print("Ключ не может быть пустым")
+        return
+    
+    result = xor_cipher(text, key)
+    
+    if choice == '1':
+        print(f"Зашифрованный текст: {result}")
+    else:
+        print(f"Дешифрованный текст: {result}")
 
-  tooljet:
-    image: tooljet/tooljet:latest
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      # Database
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=tooljet_db_user
-      - DB_PASSWORD=tooljet_db_password
-      - DB_DATABASE=tooljet_db
-      - DB_SSL=false
 
-      # Redis
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=your_redis_password
-
-      # App
-      - SERVER_HOST=0.0.0.0
-      - SERVER_PORT=3000
-      - SECRET_KEY_BASE=your_secret_key_base
-      - LOCKBOX_MASTER_KEY=your_lockbox_key
-      - NODE_ENV=production
-    ports:
-      - "3000:3000"
-    volumes:
-      - tooljet_data:/app/storage
-    restart: unless-stopped
-
-volumes:
-  postgres_data:
-  redis_data:
-  tooljet_data:
+if __name__ == "__main__":
+    main()
