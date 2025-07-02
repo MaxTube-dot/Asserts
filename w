@@ -1,205 +1,211 @@
-# Перенос структуры таблиц, связей и индексов из MS SQL в PostgreSQL
+# Подробный альтернативный вариант переноса структуры через SQLAlchemy
 
-Для переноса только структуры таблиц (без данных) с сохранением связей и индексов между изолированными подсетями предлагаю следующий метод:
+SQLAlchemy предоставляет мощный инструментарий для работы с метаданными базы данных, что делает его идеальным выбором для переноса структуры между различными СУБД. Рассмотрим этот подход детально.
 
-## 1. Генерация DDL из MS SQL
+## 1. Настройка окружения
 
-### Получение метаданных о таблицах, связях и индексах
-
-```sql
--- Полный скрипт для генерации DDL с индексами и связями
-WITH tables AS (
-    SELECT 
-        t.object_id,
-        SCHEMA_NAME(t.schema_id) AS schema_name,
-        t.name AS table_name,
-        (SELECT STRING_AGG(
-            QUOTENAME(c.name) + ' ' + 
-            CASE 
-                WHEN tp.name IN ('varchar', 'nvarchar', 'char', 'nchar') THEN 
-                    UPPER(REPLACE(tp.name, 'n', '')) + 
-                    CASE WHEN c.max_length = -1 THEN '(MAX)' 
-                         ELSE '(' + CAST(c.max_length AS VARCHAR) + ')' END
-                WHEN tp.name IN ('decimal', 'numeric') THEN 
-                    'NUMERIC(' + CAST(c.precision AS VARCHAR) + ',' + CAST(c.scale AS VARCHAR) + ')'
-                WHEN tp.name = 'datetime2' THEN 'TIMESTAMP'
-                WHEN tp.name = 'datetime' THEN 'TIMESTAMP'
-                WHEN tp.name = 'smalldatetime' THEN 'TIMESTAMP'
-                WHEN tp.name = 'bit' THEN 'BOOLEAN'
-                WHEN tp.name = 'uniqueidentifier' THEN 'UUID'
-                WHEN tp.name = 'image' THEN 'BYTEA'
-                WHEN tp.name IN ('binary', 'varbinary') THEN 'BYTEA'
-                WHEN tp.name = 'float' THEN 'DOUBLE PRECISION'
-                WHEN tp.name = 'real' THEN 'REAL'
-                WHEN tp.name = 'money' THEN 'MONEY'
-                WHEN tp.name = 'smallmoney' THEN 'MONEY'
-                WHEN tp.name LIKE '%int%' THEN UPPER(tp.name)
-                ELSE UPPER(tp.name)
-            END + ' ' +
-            CASE WHEN c.is_nullable = 0 THEN 'NOT NULL' ELSE '' END + ' ' +
-            CASE WHEN ic.column_id IS NOT NULL AND i.is_primary_key = 1 THEN 'PRIMARY KEY' ELSE '' END + ' ' +
-            CASE WHEN c.is_identity = 1 THEN 
-                CASE WHEN IDENT_SEED(SCHEMA_NAME(t.schema_id) + '.' + t.name) IS NOT NULL 
-                     THEN 'GENERATED ALWAYS AS IDENTITY' 
-                     ELSE '' END
-                ELSE '' END,
-            ', ' + CHAR(13) + CHAR(10)
-        FROM sys.columns c
-        JOIN sys.types tp ON c.user_type_id = tp.user_type_id
-        LEFT JOIN sys.indexes i ON t.object_id = i.object_id AND i.is_primary_key = 1
-        LEFT JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id 
-                                      AND c.column_id = ic.column_id
-        WHERE c.object_id = t.object_id
-        ) AS columns_ddl
-    FROM sys.tables t
-)
-SELECT 
-    '-- Table: ' + schema_name + '.' + table_name + CHAR(13) + CHAR(10) +
-    'CREATE TABLE ' + QUOTENAME(schema_name) + '.' + QUOTENAME(table_name) + ' (' + CHAR(13) + CHAR(10) +
-    '    ' + columns_ddl + CHAR(13) + CHAR(10) +
-    ');' + CHAR(13) + CHAR(10) +
-    
-    -- Добавляем индексы (кроме первичных ключей)
-    ISNULL((
-        SELECT CHAR(13) + CHAR(10) + '-- Indexes for table: ' + schema_name + '.' + table_name + CHAR(13) + CHAR(10) +
-        STRING_AGG(
-            'CREATE ' + 
-            CASE WHEN i.is_unique = 1 THEN 'UNIQUE ' ELSE '' END +
-            'INDEX ' + QUOTENAME(i.name) + ' ON ' + 
-            QUOTENAME(SCHEMA_NAME(t.schema_id)) + '.' + QUOTENAME(t.name) + ' (' +
-            STRING_AGG(QUOTENAME(c.name) + 
-            CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END, ', ') +
-            ');',
-            CHAR(13) + CHAR(10)
-        FROM sys.indexes i
-        JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-        JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
-        WHERE i.object_id = t.object_id
-          AND i.is_primary_key = 0
-          AND i.type = 2 -- B-tree indexes
-        GROUP BY i.name, i.is_unique
-    ), '') +
-    
-    -- Добавляем внешние ключи
-    ISNULL((
-        SELECT CHAR(13) + CHAR(10) + '-- Foreign keys for table: ' + schema_name + '.' + table_name + CHAR(13) + CHAR(10) +
-        STRING_AGG(
-            'ALTER TABLE ' + QUOTENAME(schema_name) + '.' + QUOTENAME(table_name) + 
-            ' ADD CONSTRAINT ' + QUOTENAME(fk.name) + 
-            ' FOREIGN KEY (' + STRING_AGG(QUOTENAME(pc.name), ', ') + ')' +
-            ' REFERENCES ' + QUOTENAME(SCHEMA_NAME(ro.schema_id)) + '.' + QUOTENAME(ro.name) + 
-            ' (' + STRING_AGG(QUOTENAME(rc.name), ', ') + ')' +
-            CASE WHEN fk.delete_referential_action = 1 THEN ' ON DELETE CASCADE'
-                 WHEN fk.delete_referential_action = 2 THEN ' ON DELETE SET NULL'
-                 WHEN fk.delete_referential_action = 3 THEN ' ON DELETE SET DEFAULT'
-                 ELSE '' END +
-            CASE WHEN fk.update_referential_action = 1 THEN ' ON UPDATE CASCADE'
-                 WHEN fk.update_referential_action = 2 THEN ' ON UPDATE SET NULL'
-                 WHEN fk.update_referential_action = 3 THEN ' ON UPDATE SET DEFAULT'
-                 ELSE '' END + ';',
-            CHAR(13) + CHAR(10))
-        FROM sys.foreign_keys fk
-        JOIN sys.tables ro ON fk.referenced_object_id = ro.object_id
-        JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
-        JOIN sys.columns pc ON fkc.parent_object_id = pc.object_id AND fkc.parent_column_id = pc.column_id
-        JOIN sys.columns rc ON fkc.referenced_object_id = rc.object_id AND fkc.referenced_column_id = rc.column_id
-        WHERE fk.parent_object_id = t.object_id
-        GROUP BY fk.name, ro.name, ro.schema_id, 
-                 fk.delete_referential_action, fk.update_referential_action
-    ), '') AS full_ddl
-FROM sys.tables t
-JOIN tables ON t.object_id = tables.object_id
-ORDER BY CASE WHEN EXISTS (
-    SELECT 1 FROM sys.foreign_keys fk WHERE fk.parent_object_id = t.object_id
-) THEN 0 ELSE 1 END, t.name;
+### Установка необходимых пакетов
+```bash
+pip install sqlalchemy pyodbc psycopg2 sqlalchemy-utils
 ```
 
-## 2. Преобразование DDL для PostgreSQL
-
-После получения DDL из MS SQL нужно выполнить следующие преобразования:
-
-1. **Типы данных**:
-   - `NVARCHAR` → `VARCHAR`
-   - `DATETIME` → `TIMESTAMP`
-   - `BIT` → `BOOLEAN`
-   - `UNIQUEIDENTIFIER` → `UUID`
-   - `IDENTITY` → `GENERATED ALWAYS AS IDENTITY`
-
-2. **Синтаксис ограничений**:
-   - `[PRIMARY] CLUSTERED` → удалить (PostgreSQL не использует это понятие)
-   - `WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF...)` → удалить
-
-3. **Схемы**:
-   - Убедитесь, что схемы существуют в PostgreSQL или замените на `public`
-
-## 3. Оптимизированный подход для изолированных сетей
-
-1. **Генерация скриптов на стороне MS SQL**:
-   ```powershell
-   # PowerShell скрипт для генерации DDL
-   $query = "SELECT ..." # Запрос из предыдущего раздела
-   $outputFile = "C:\export\postgres_ddl.sql"
-   
-   Invoke-Sqlcmd -ServerInstance "your_server" -Database "your_db" -Query $query | 
-   Out-File -FilePath $outputFile -Encoding UTF8
-   ```
-
-2. **Перенос файла**:
-   - Упакуйте SQL-файл в архив
-   - Передайте через утвержденный канал (SFTP, USB и т.д.)
-
-3. **Применение в PostgreSQL**:
-   ```bash
-   psql -U username -d dbname -f /path/to/postgres_ddl.sql
-   ```
-
-## 4. Проверка целостности после переноса
-
-```sql
--- Проверка таблиц
-SELECT table_name, 
-       (SELECT COUNT(*) FROM information_schema.columns 
-        WHERE table_name = t.table_name) AS columns_count
-FROM information_schema.tables t
-WHERE table_schema = 'public'
-ORDER BY table_name;
-
--- Проверка индексов
-SELECT tablename, indexname, indexdef 
-FROM pg_indexes
-WHERE schemaname = 'public'
-ORDER BY tablename, indexname;
-
--- Проверка внешних ключей
-SELECT conname AS constraint_name,
-       conrelid::regclass AS table_name,
-       pg_get_constraintdef(oid) AS constraint_def
-FROM pg_constraint
-WHERE contype = 'f' AND connamespace = 'public'::regnamespace
-ORDER BY conrelid::regclass::text;
-```
-
-## Альтернативный вариант: использование SQLAlchemy для генерации метаданных
-
-Если у вас есть доступ к Python в обеих средах:
+## 2. Полный скрипт для генерации DDL
 
 ```python
-from sqlalchemy import create_engine, MetaData
+from sqlalchemy import create_engine, MetaData, Table
+from sqlalchemy.schema import CreateTable, CreateIndex
+from sqlalchemy.dialects import postgresql
+import re
 
-# Генерация метаданных из MS SQL
-mssql_engine = create_engine('mssql+pyodbc://...')
-mssql_metadata = MetaData()
-mssql_metadata.reflect(bind=mssql_engine)
+def clean_identifier(name):
+    """Очистка идентификаторов от специальных символов"""
+    return re.sub(r'[^a-zA-Z0-9_]', '_', name)
 
-# Генерация PostgreSQL DDL
-pg_ddl = []
-for table in mssql_metadata.sorted_tables:
-    # Преобразование типов и синтаксиса
-    pg_ddl.append(str(table.compile(dialect=postgresql.dialect())) 
+def convert_mssql_to_pg_ddl(mssql_connection_string, output_file):
+    """Генерация PostgreSQL DDL из структуры MS SQL"""
+    
+    # Создаем подключение к MS SQL
+    mssql_engine = create_engine(mssql_connection_string)
+    mssql_metadata = MetaData()
+    
+    # Получаем все таблицы, включая индексы и ограничения
+    mssql_metadata.reflect(bind=mssql_engine)
+    
+    with open(output_file, 'w', encoding='utf-8') as f:
+        # Сначала создаем таблицы без внешних ключей
+        tables_without_fk = []
+        tables_with_fk = []
+        
+        for table in mssql_metadata.sorted_tables:
+            if table.foreign_keys:
+                tables_with_fk.append(table)
+            else:
+                tables_without_fk.append(table)
+        
+        # Записываем CREATE TABLE для таблиц без внешних ключей
+        for table in tables_without_fk:
+            pg_ddl = str(CreateTable(table).compile(dialect=postgresql.dialect())
+            f.write(f"-- Table: {table.name}\n")
+            f.write(f"{pg_ddl};\n\n")
+        
+        # Затем таблицы с внешними ключами
+        for table in tables_with_fk:
+            # Создаем таблицу без ограничений
+            temp_table = Table(
+                table.name,
+                table.metadata,
+                *[col.copy() for col in table.columns],
+                schema=table.schema
+            )
+            
+            pg_ddl = str(CreateTable(temp_table).compile(dialect=postgresql.dialect()))
+            f.write(f"-- Table: {table.name}\n")
+            f.write(f"{pg_ddl};\n\n")
+        
+        # Добавляем первичные ключи
+        for table in mssql_metadata.sorted_tables:
+            if table.primary_key:
+                pk_columns = [col.name for col in table.primary_key.columns]
+                f.write(f"-- Primary key for {table.name}\n")
+                f.write(f"ALTER TABLE {table.name} ADD CONSTRAINT pk_{table.name} ")
+                f.write(f"PRIMARY KEY ({', '.join(pk_columns)});\n\n")
+        
+        # Добавляем индексы
+        for table in mssql_metadata.sorted_tables:
+            for index in table.indexes:
+                if not index.unique:  # UNIQUE обрабатываются как ограничения
+                    idx_columns = [col.name for col in index.columns]
+                    f.write(f"-- Index: {index.name}\n")
+                    f.write(f"CREATE INDEX {index.name} ON {table.name} ")
+                    f.write(f"({', '.join(idx_columns)});\n\n")
+        
+        # Добавляем внешние ключи
+        for table in tables_with_fk:
+            for fk in table.foreign_keys:
+                f.write(f"-- Foreign key: {fk.name}\n")
+                f.write(f"ALTER TABLE {table.name} ADD CONSTRAINT {fk.name} ")
+                f.write(f"FOREIGN KEY ({fk.parent.name}) ")
+                f.write(f"REFERENCES {fk.column.table.name} ({fk.column.name})")
+                
+                # Обработка ON DELETE/ON UPDATE
+                if fk.ondelete:
+                    f.write(f" ON DELETE {fk.ondelete.upper()}")
+                if fk.onupdate:
+                    f.write(f" ON UPDATE {fk.onupdate.upper()}")
+                
+                f.write(";\n\n")
+        
+        # Добавляем уникальные ограничения
+        for table in mssql_metadata.sorted_tables:
+            for index in table.indexes:
+                if index.unique and not index.primary_key:
+                    unique_cols = [col.name for col in index.columns]
+                    f.write(f"-- Unique constraint: {index.name}\n")
+                    f.write(f"ALTER TABLE {table.name} ADD CONSTRAINT {index.name} ")
+                    f.write(f"UNIQUE ({', '.join(unique_cols)});\n\n")
 
-# Сохранение в файл
-with open('schema_postgres.sql', 'w') as f:
-    f.write('\n'.join(pg_ddl))
+if __name__ == "__main__":
+    # Параметры подключения к MS SQL
+    mssql_conn_str = (
+        "mssql+pyodbc://username:password@server/database?"
+        "driver=ODBC+Driver+17+for+SQL+Server"
+    )
+    
+    # Файл для вывода PostgreSQL DDL
+    output_file = "postgres_schema.sql"
+    
+    convert_mssql_to_pg_ddl(mssql_conn_str, output_file)
+    print(f"PostgreSQL DDL успешно сгенерирован в файл {output_file}")
 ```
 
-Этот подход позволяет перенести всю структуру базы данных, включая сложные связи и индексы, без необходимости прямого соединения между серверами.
+## 3. Особенности реализации
+
+### Обработка типов данных
+Скрипт автоматически преобразует типы данных через SQLAlchemy:
+- `NVARCHAR` → `VARCHAR`
+- `DATETIME` → `TIMESTAMP`
+- `BIT` → `BOOLEAN`
+- `UNIQUEIDENTIFIER` → `UUID`
+
+### Сохранение связей
+Алгоритм гарантирует правильный порядок создания таблиц:
+1. Сначала независимые таблицы (без внешних ключей)
+2. Затем зависимые таблицы
+3. В конце добавляются все ограничения внешних ключей
+
+### Поддержка схем
+Скрипт сохраняет оригинальные имена схем. Если нужно перенести все в схему `public`:
+```python
+# В функции convert_mssql_to_pg_ddl замените:
+temp_table = Table(
+    table.name,
+    table.metadata,
+    *[col.copy() for col in table.columns],
+    schema='public'  # вместо table.schema
+)
+```
+
+## 4. Перенос между изолированными сетями
+
+1. **На стороне MS SQL**:
+   - Запустите скрипт для генерации `postgres_schema.sql`
+   - Упакуйте файл: `zip schema.zip postgres_schema.sql`
+
+2. **Перенос файла**:
+   - Используйте утвержденный метод (SFTP, USB и т.д.)
+
+3. **На стороне PostgreSQL**:
+   - Распакуйте архив
+   - Выполните: `psql -U username -d dbname -f postgres_schema.sql`
+
+## 5. Дополнительные улучшения
+
+### Логирование и проверки
+```python
+def validate_schema(mssql_metadata, pg_engine):
+    """Сравнение структуры исходной и целевой БД"""
+    pg_metadata = MetaData()
+    pg_metadata.reflect(bind=pg_engine)
+    
+    mssql_tables = {t.name: t for t in mssql_metadata.sorted_tables}
+    pg_tables = {t.name: t for t in pg_metadata.sorted_tables}
+    
+    for name, mssql_table in mssql_tables.items():
+        if name not in pg_tables:
+            print(f"Таблица {name} отсутствует в PostgreSQL")
+            continue
+            
+        pg_table = pg_tables[name]
+        # Проверка столбцов
+        for mssql_col in mssql_table.columns:
+            pg_col = pg_table.columns.get(mssql_col.name)
+            if not pg_col:
+                print(f"Столбец {mssql_col.name} отсутствует в таблице {name}")
+```
+
+### Поддержка специфических конструкций
+Для обработки особых случаев (например, вычисляемых столбцов) добавьте кастомную логику:
+```python
+for column in table.columns:
+    if column.computed:
+        # Обработка вычисляемых столбцов
+        pg_expr = convert_mssql_expression_to_pg(column.server_default.arg.text)
+        f.write(f"ALTER TABLE {table.name} ADD COLUMN {column.name} ")
+        f.write(f"GENERATED ALWAYS AS ({pg_expr}) STORED;\n")
+```
+
+## 6. Ограничения и обходные пути
+
+1. **Триггеры и хранимые процедуры**:
+   - Не переносятся автоматически, требуется ручная миграция
+   - Для переноса добавьте анализ `sys.sql_modules`
+
+2. **Специфические типы данных**:
+   - Пользовательские типы требуют ручного преобразования
+   - Решение: добавить маппинг в `convert_mssql_to_pg_ddl`
+
+3. **Партиционирование**:
+   - Не поддерживается автоматическим отражением
+   - Решение: ручное добавление после базовой миграции
+
+Этот подход обеспечивает максимально точный перенос структуры базы данных с сохранением всех связей и ограничений, даже между изолированными средами.
