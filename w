@@ -1,4 +1,10 @@
-# Полный код генератора Blazor страниц из DbContext
+[GenerateBlazorComponents(GenerateCRUD = true, RoutePrefix = "admin/data")]
+public class ApplicationDbContext : DbContext
+{
+    // Ваши DbSets
+    public DbSet<Product> Products { get; set; }
+    public DbSet<Category> Categories { get; set; }
+}# Полный код генератора Blazor страниц из DbContext
 
 Я предоставлю полный код для генерации Blazor (Razor Components) страниц вместо Razor Pages. Вот готовая реализация:
 
