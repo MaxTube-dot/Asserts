@@ -1,4 +1,14 @@
-[GenerateBlazorComponents(GenerateCRUD = true, RoutePrefix = "admin/data")]
+[using System;
+
+namespace BlazorComponentsGenerator
+{
+    [AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = false)]
+    public class GenerateBlazorComponentsAttribute : Attribute
+    {
+        public bool GenerateCRUD { get; set; } = true;
+        public string RoutePrefix { get; set; } = "data";
+    }
+}GenerateBlazorComponents(GenerateCRUD = true, RoutePrefix = "admin/data")]
 public class ApplicationDbContext : DbContext
 {
     // Ваши DbSets
