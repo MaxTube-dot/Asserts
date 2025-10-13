@@ -456,4 +456,248 @@ Source Generator может анализировать типы из други�
 [47] Building a Clean Architecture with Blazor https://dotnet8.patrickgod.com/posts/building-a-clean-architecture-with-blazor
 [48] Incremental Roslyn Source Generators: Using Additional ... https://www.thinktecture.com/net/roslyn-source-generators-using-additional-files/
 [49] Blazor Fundamentals #5 - Building a Backend API https://www.youtube.com/watch?v=IyGvEEK24i4
-[50] Blazor Hero - Clean Architecture Template Quick Start Guide https://codewithmukesh.com/blog/blazor-hero-quick-start-guide/
+[# Совместимость Source Generator (.NET Standard 2.0) с проектом Data (.NET 8.0)
+
+**Да, могут быть проблемы**, но они решаемы. Рассмотрю основные моменты и способы их решения.
+
+## Основные ограничения
+
+### Требование NET Standard 2.0 для Source Generator
+
+Source Generator **обязательно** должен использовать `netstandard2.0` — это фундаментальное требование Roslyn. Это связано с тем, что:[1][2][3]
+
+- Компилятор .NET сам работает на .NET Standard 2.0[1]
+- Source Generator загружается компилятором как сборка, которая должна быть совместима с его версией[2]
+- Поддержка работы как в Visual Studio (.NET Framework), так и в dotnet CLI (.NET Core)[4]
+
+### Проблема анализа .NET 8.0 проекта
+
+Когда Source Generator (`netstandard2.0`) пытается проанализировать проект Data (`.NET 8.0`), возникают следующие проблемы:[5][6]
+
+- Невозможность прямой ссылки на проект .NET 8.0 из netstandard2.0
+- Ошибки загрузки сборок с несовместимыми версиями
+- Недоступность новых API .NET 8.0
+
+## Решения проблемы
+
+### 1. Анализ через Compilation API (Рекомендуемый)
+
+Source Generator не нужно напрямую ссылаться на Data проект. Вместо этого используйте Roslyn API для анализа:
+
+```csharp
+[Generator]
+public class DbContextAnalyzer : IIncrementalGenerator
+{
+    public void Initialize(IncrementalGeneratorInitializationContext context)
+    {
+        var dbContextClasses = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                predicate: static (node, _) => IsDbContextClass(node),
+                transform: static (ctx, _) => AnalyzeDbContext(ctx))
+            .Where(static m => m is not null);
+
+        context.RegisterSourceOutput(dbContextClasses, GenerateCode);
+    }
+
+    private static DbContextInfo? AnalyzeDbContext(GeneratorSyntaxContext context)
+    {
+        // Анализируем DbContext через SemanticModel
+        var symbol = context.SemanticModel.GetDeclaredSymbol(context.Node);
+        
+        // Получаем информацию о типах через Compilation
+        var compilation = context.SemanticModel.Compilation;
+        
+        // Анализируем DbSet свойства без прямой ссылки на EF Core
+        // Используем только информацию из символов
+        
+        return new DbContextInfo(/* данные из анализа */);
+    }
+}
+```
+
+### 2. Shared Source Files
+
+Создайте общие файлы с базовыми типами для обмена между проектами:[7][2]
+
+```
+Solution/
+├── MyApp.Shared/           (netstandard2.0)
+│   ├── IEntity.cs
+│   ├── DbContextInfo.cs
+│   └── EntityMetadata.cs
+├── MyApp.Data/             (net8.0, ссылается на Shared)
+│   └── ApplicationDbContext.cs
+└── MyApp.SourceGenerator/  (netstandard2.0, ссылается на Shared)
+    └── DbContextAnalyzer.cs
+```
+
+**MyApp.Shared/DbContextInfo.cs:**
+```csharp
+// netstandard2.0 совместимый код
+public class DbContextInfo
+{
+    public string ClassName { get; set; }
+    public string Namespace { get; set; }
+    public List<EntityInfo> Entities { get; set; }
+}
+
+public class EntityInfo
+{
+    public string Name { get; set; }
+    public string PropertyName { get; set; }
+}
+```
+
+### 3. MSBuild Property передача
+
+Используйте MSBuild для передачи метаданных в Source Generator:[8]
+
+**MyApp.Data.csproj:**
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+
+  <!-- Передаём информацию о DbContext в Source Generator -->
+  <ItemGroup>
+    <CompilerVisibleProperty Include="DbContextClassName" />
+    <CompilerVisibleProperty Include="DbContextNamespace" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <DbContextClassName>ApplicationDbContext</DbContextClassName>
+    <DbContextNamespace>MyApp.Data</DbContextNamespace>
+  </PropertyGroup>
+</Project>
+```
+
+**В Source Generator:**
+```csharp
+public void Initialize(IncrementalGeneratorInitializationContext context)
+{
+    var configOptions = context.AnalyzerConfigOptionsProvider
+        .Select((provider, _) => 
+        {
+            provider.GlobalOptions.TryGetValue("build_property.DbContextClassName", out var className);
+            provider.GlobalOptions.TryGetValue("build_property.DbContextNamespace", out var namespaceName);
+            return new { ClassName = className, Namespace = namespaceName };
+        });
+}
+```
+
+### 4. Conditional Compilation
+
+Используйте условную компиляцию для обработки разных версий .NET:[9]
+
+```csharp
+// В Source Generator (netstandard2.0)
+private static string GenerateRepositoryMethod(string entityName)
+{
+    return $@"
+#if NET8_0_OR_GREATER
+        public async Task<{entityName}?> GetByIdAsync(int id, CancellationToken cancellationToken = default)
+        {{
+            return await _context.{entityName}s.FindAsync(new object[] {{ id }}, cancellationToken);
+        }}
+#else
+        public async Task<{entityName}> GetByIdAsync(int id)
+        {{
+            return await _context.{entityName}s.FindAsync(id);
+        }}
+#endif";
+}
+```
+
+## Настройка проектов
+
+### API проект конфигурация
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../MyApp.Data/MyApp.Data.csproj" />
+    
+    <!-- Source Generator без ссылки на выходную сборку -->
+    <ProjectReference Include="../MyApp.SourceGenerator/MyApp.SourceGenerator.csproj" 
+                      ReferenceOutputAssembly="false" 
+                      OutputItemType="Analyzer" 
+                      PrivateAssets="all" />
+  </ItemGroup>
+</Project>
+```
+
+### Отладка и тестирование
+
+Для отладки Source Generator с .NET 8.0 проектом:[10]
+
+```csharp
+[Generator]
+public class DbContextAnalyzer : IIncrementalGenerator
+{
+    public void Initialize(IncrementalGeneratorInitializationContext context)
+    {
+        try
+        {
+            // Основная логика генератора
+        }
+        catch (Exception ex)
+        {
+            // Выводим ошибки как диагностику компилятора
+            context.RegisterPostInitializationOutput(ctx =>
+            {
+                var descriptor = new DiagnosticDescriptor(
+                    "SG001", "Source Generator Error", 
+                    $"Error: {ex.Message}\nStack: {ex.StackTrace}",
+                    "SourceGenerator", DiagnosticSeverity.Error, true);
+                
+                ctx.ReportDiagnostic(Diagnostic.Create(descriptor, Location.None));
+            });
+        }
+    }
+}
+```
+
+## Итоговая рекомендация
+
+**Используйте подход с анализом через Roslyn API** без прямых ссылок на .NET 8.0 проект. Source Generator должен анализировать код через `SemanticModel` и `Compilation`, получая всю необходимую информацию о DbContext и его свойствах через метаданные компилятора. Это обеспечивает полную совместимость между netstandard2.0 и net8.0 проектами.[11][7]
+
+Источники
+[1] Dotnet Source Generators in 2024 Part 1: Getting Started https://posts.specterops.io/dotnet-source-generators-in-2024-part-1-getting-started-76d619b633f5
+[2] Don't limit Source Generators to "netstandard2.0" target ... https://github.com/dotnet/roslyn/issues/45162
+[3] C# Source Generator - warning CS8032: An instance of ... https://stackoverflow.com/questions/65479888/c-sharp-source-generator-warning-cs8032-an-instance-of-analyzer-cannot-be-cre
+[4] Dotnet Source Generators in 2024 Part 1: Getting Started https://specterops.io/blog/2024/10/01/dotnet-source-generators-in-2024-part-1-getting-started/
+[5] Roslyn plugins (analyzers, source generators) target .NET ... https://github.com/dotnet/roslyn-analyzers/issues/7302
+[6] Impossible to implement Source Generators for projects ... https://github.com/dotnet/roslyn/issues/70922
+[7] Reference local projects in Source Generator #47517 https://github.com/dotnet/roslyn/discussions/47517
+[8] Determining target framework in source generators #72069 https://github.com/dotnet/roslyn/discussions/72069
+[9] What is the max C# version a source generator library can ... https://stackoverflow.com/questions/77840701/what-is-the-max-c-sharp-version-a-source-generator-library-can-target
+[10] Debug Source Generators in JetBrains Rider https://blog.jetbrains.com/dotnet/2023/07/13/debug-source-generators-in-jetbrains-rider/
+[11] Introducing C# Source Generators - .NET Blog https://devblogs.microsoft.com/dotnet/introducing-c-source-generators/
+[12] c# - Roslyn source generator is "ignored"? https://stackoverflow.com/questions/75133482/roslyn-source-generator-is-ignored
+[13] The .NET Compiler Platform SDK (Roslyn APIs) - C# https://learn.microsoft.com/en-us/dotnet/csharp/roslyn-sdk/
+[14] Can incremental generators be used with .NET 8+? : r/csharp https://www.reddit.com/r/csharp/comments/1g8y03p/can_incremental_generators_be_used_with_net_8/
+[15] Performance Improvements in .NET 8 https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-8/
+[16] Incremental Roslyn Source Generators In .NET 6 https://www.thinktecture.com/net/roslyn-source-generators-introduction/
+[17] Use of NETStandard 2.0 in NET 8.0 project, conflicts with ... https://stackoverflow.com/questions/78737605/use-of-netstandard-2-0-in-net-8-0-project-conflicts-with-netstandard-2-1
+[18] C#, .NET, How can I make a code generator download ... https://learn.microsoft.com/en-us/answers/questions/2284156/c-net-how-can-i-make-a-code-generator-download-whe
+[19] Roslyn Source Generators (via project references) aren't ... https://youtrack.jetbrains.com/projects/RIDER/issues/RIDER-128288/Roslyn-Source-Generators-via-project-references-arent-supported-in-IDE-Cannot-resolve-symbol
+[20] Understanding source generators https://dev.to/serhii_korol_ab7776c50dba/understanding-source-generators-60a
+[21] .Net Code Generation. Part 6. C# Source Generators | Михаил ... https://mihailromanov.wordpress.com/2021/01/31/net-code-generation-part-6-c-source-generators/
+[22] How to make libraries compatible with native AOT - .NET ... https://devblogs.microsoft.com/dotnet/creating-aot-compatible-libraries/
+[23] Target dotnet project for net8.0 and net8.0-windows https://stackoverflow.com/questions/77947866/target-dotnet-project-for-net8-0-and-net8-0-windows
+[24] Compile-time configuration source generation - .NET https://learn.microsoft.com/en-us/dotnet/core/extensions/configuration-generator
+[25] .NET Handbook | Best Practices / Source Generators https://infinum.com/handbook/dotnet/best-practices/source-generators
+[26] AOT compile gives incorrect error about Roslyn source ... https://github.com/dotnet/sdk/issues/37228
+[27] Source Generator Running on Indirectly Associated Projects https://stackoverflow.com/questions/76672382/source-generator-running-on-indirectly-associated-projects
+[28] ComWrappers source generation - .NET https://learn.microsoft.com/en-us/dotnet/standard/native-interop/comwrappers-source-generation
+[29] ASP.NET Core updates in .NET 8 Preview 3 https://devblogs.microsoft.com/dotnet/asp-net-core-updates-in-dotnet-8-preview-3/
+[30] Source Generators Not Generating Sources · Issue #49249 https://github.com/dotnet/roslyn/issues/49249
+[31] SourceGenerator.Foundations 2.0.13 https://www.nuget.org/packages/SourceGenerator.Foundations
+[32] C# Source Generator Build Issues between Projects https://www.reddit.com/r/csharp/comments/1e7xt6j/c_source_generator_build_issues_between_projects/
+] Blazor Hero - Clean Architecture Template Quick Start Guide https://codewithmukesh.com/blog/blazor-hero-quick-start-guide/
