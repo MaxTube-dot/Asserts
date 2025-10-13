@@ -1,614 +1,703 @@
-# Полноценное решение для защиты от XSS в ASP.NET Framework 4.6.2 API
+# Реализация Source Generator для анализа DbContext в архитектуре Blazor + API + Data
 
-На основе анализа существующих практик и готовых решений, представляю комплексную защиту от XSS-атак для вашего API-приложения ASP.NET MVC на .NET Framework 4.6.2.
+Ваша задача вполне решаема с помощью Source Generators в .NET 8. Рассмотрю оптимальную архитектуру проекта и способы её реализации.
 
-## Комплексное решение из 4 компонентов
+## Рекомендуемая архитектура проекта
 
-### 1. XSS Middleware (Универсальная защита)
+### Структура решения
 
-Создайте файл **`XssProtectionMiddleware.cs`**:
-
-```csharp
-using System;
-using System.IO;
-using System.Text;
-using System.Threading.Tasks;
-using System.Web;
-using System.Collections.Generic;
-using System.Text.RegularExpressions;
-using Ganss.XSS;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-
-public class XssProtectionMiddleware
-{
-    private readonly RequestDelegate _next;
-    private readonly HtmlSanitizer _sanitizer;
-    private static readonly string[] DangerousPatterns = {
-        @"<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>",
-        @"javascript:",
-        @"vbscript:",
-        @"onload\s*=",
-        @"onerror\s*=",
-        @"onclick\s*=",
-        @"onmouseover\s*=",
-        @"<iframe",
-        @"<object",
-        @"<embed",
-        @"<form"
-    };
-
-    public XssProtectionMiddleware(RequestDelegate next)
-    {
-        _next = next ?? throw new ArgumentNullException(nameof(next));
-        _sanitizer = new HtmlSanitizer();
-        ConfigureSanitizer();
-    }
-
-    private void ConfigureSanitizer()
-    {
-        _sanitizer.AllowedTags.Clear();
-        _sanitizer.AllowedAttributes.Clear();
-        _sanitizer.AllowDataAttributes = false;
-        _sanitizer.KeepChildNodes = true;
-    }
-
-    public async Task Invoke(HttpContext context)
-    {
-        try
-        {
-            // Проверка Query String
-            if (context.Request.QueryString.HasValue)
-            {
-                ValidateQueryString(context.Request.QueryString.Value);
-            }
-
-            // Проверка URL Path
-            ValidateUrlPath(context.Request.Path.Value);
-
-            // Проверка тела запроса для POST/PUT
-            if (HasRequestBody(context.Request))
-            {
-                await ValidateRequestBody(context);
-            }
-
-            await _next.Invoke(context);
-        }
-        catch (XssDetectedException ex)
-        {
-            await RespondWithError(context, ex.Message);
-        }
-    }
-
-    private void ValidateQueryString(string queryString)
-    {
-        var decoded = HttpUtility.UrlDecode(queryString);
-        if (IsMalicious(decoded))
-        {
-            throw new XssDetectedException("XSS pattern detected in query string");
-        }
-    }
-
-    private void ValidateUrlPath(string path)
-    {
-        if (IsMalicious(path))
-        {
-            throw new XssDetectedException("XSS pattern detected in URL path");
-        }
-    }
-
-    private async Task ValidateRequestBody(HttpContext context)
-    {
-        context.Request.EnableBuffering();
-        
-        using (var reader = new StreamReader(context.Request.Body, Encoding.UTF8, leaveOpen: true))
-        {
-            var body = await reader.ReadToEndAsync();
-            context.Request.Body.Position = 0;
-
-            if (string.IsNullOrEmpty(body)) return;
-
-            var contentType = context.Request.ContentType?.ToLowerInvariant();
-
-            if (contentType?.Contains("application/json") == true)
-            {
-                ValidateJsonPayload(body);
-            }
-            else if (contentType?.Contains("application/x-www-form-urlencoded") == true)
-            {
-                ValidateFormData(body);
-            }
-        }
-    }
-
-    private void ValidateJsonPayload(string json)
-    {
-        try
-        {
-            var token = JToken.Parse(json);
-            ValidateJToken(token);
-        }
-        catch (JsonException)
-        {
-            // Ignore invalid JSON, let the framework handle it
-        }
-    }
-
-    private void ValidateJToken(JToken token)
-    {
-        switch (token.Type)
-        {
-            case JTokenType.Object:
-                foreach (var property in ((JObject)token).Properties())
-                {
-                    ValidateJToken(property.Value);
-                }
-                break;
-            case JTokenType.Array:
-                foreach (var item in (JArray)token)
-                {
-                    ValidateJToken(item);
-                }
-                break;
-            case JTokenType.String:
-                var value = token.Value<string>();
-                if (IsMalicious(value))
-                {
-                    throw new XssDetectedException($"XSS pattern detected in JSON: {value}");
-                }
-                break;
-        }
-    }
-
-    private void ValidateFormData(string formData)
-    {
-        var pairs = formData.Split('&');
-        foreach (var pair in pairs)
-        {
-            var keyValue = pair.Split('=');
-            if (keyValue.Length == 2)
-            {
-                var decoded = HttpUtility.UrlDecode(keyValue[1]);
-                if (IsMalicious(decoded))
-                {
-                    throw new XssDetectedException($"XSS pattern detected in form  {decoded}");
-                }
-            }
-        }
-    }
-
-    private bool IsMalicious(string input)
-    {
-        if (string.IsNullOrWhiteSpace(input)) return false;
-
-        // Быстрая проверка регулярными выражениями
-        foreach (var pattern in DangerousPatterns)
-        {
-            if (Regex.IsMatch(input, pattern, RegexOptions.IgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        // Проверка с помощью HtmlSanitizer
-        var sanitized = _sanitizer.Sanitize(input);
-        return !string.Equals(input, sanitized, StringComparison.Ordinal);
-    }
-
-    private bool HasRequestBody(HttpRequest request)
-    {
-        return request.Method == "POST" || request.Method == "PUT" || request.Method == "PATCH";
-    }
-
-    private async Task RespondWithError(HttpContext context, string message)
-    {
-        context.Response.StatusCode = 400;
-        context.Response.ContentType = "application/json";
-        
-        var errorResponse = new
-        {
-            error = "Bad Request",
-            message = "Request blocked due to security policy",
-            details = message
-        };
-
-        await context.Response.WriteAsync(JsonConvert.SerializeObject(errorResponse));
-    }
-}
-
-public class XssDetectedException : Exception
-{
-    public XssDetectedException(string message) : base(message) { }
-}
-
-// Extension method для регистрации middleware
-public static class XssMiddlewareExtensions
-{
-    public static IApplicationBuilder UseXssProtection(this IApplicationBuilder builder)
-    {
-        return builder.UseMiddleware<XssProtectionMiddleware>();
-    }
-}
+```
+MySolution/
+├── MyApp.Blazor/          (зависит от API)
+├── MyApp.API/             (зависит от Data, SourceGenerator)
+├── MyApp.Data/            (содержит DbContext)
+└── MyApp.SourceGenerator/ (анализирует Data, генерирует в API)
 ```
 
-### 2. Action Filters для MVC и Web API
+### Конфигурация проектов
 
-**`XssSanitizeActionFilter.cs`** для MVC контроллеров:
-
-```csharp
-using System;
-using System.Web.Mvc;
-using System.Linq;
-using Ganss.XSS;
-
-public class XssSanitizeActionFilter : ActionFilterAttribute
-{
-    private static readonly HtmlSanitizer _sanitizer = new HtmlSanitizer();
-
-    static XssSanitizeActionFilter()
-    {
-        _sanitizer.AllowedTags.Clear();
-        _sanitizer.AllowedAttributes.Clear();
-        _sanitizer.AllowDataAttributes = false;
-    }
-
-    public override void OnActionExecuting(ActionExecutingContext filterContext)
-    {
-        var keys = filterContext.ActionParameters.Keys.ToList();
-        
-        foreach (var key in keys)
-        {
-            var value = filterContext.ActionParameters[key];
-            
-            if (value is string stringValue && !string.IsNullOrEmpty(stringValue))
-            {
-                var sanitized = _sanitizer.Sanitize(stringValue);
-                if (stringValue != sanitized)
-                {
-                    throw new InvalidOperationException($"XSS content detected in parameter: {key}");
-                }
-            }
-            else if (value != null && !IsSimpleType(value.GetType()))
-            {
-                SanitizeObject(value);
-            }
-        }
-        
-        base.OnActionExecuting(filterContext);
-    }
-
-    private void SanitizeObject(object obj)
-    {
-        if (obj == null) return;
-        
-        var properties = obj.GetType().GetProperties()
-            .Where(p => p.CanRead && p.CanWrite && p.PropertyType == typeof(string));
-            
-        foreach (var property in properties)
-        {
-            var value = property.GetValue(obj) as string;
-            if (!string.IsNullOrEmpty(value))
-            {
-                var sanitized = _sanitizer.Sanitize(value);
-                if (value != sanitized)
-                {
-                    throw new InvalidOperationException($"XSS content detected in property: {property.Name}");
-                }
-            }
-        }
-    }
-
-    private static bool IsSimpleType(Type type)
-    {
-        return type.IsPrimitive || type == typeof(string) || type == typeof(DateTime) 
-               || type == typeof(decimal) || type == typeof(Guid) || type.IsEnum;
-    }
-}
-```
-
-**`XssWebApiActionFilter.cs`** для Web API контроллеров:
-
-```csharp
-using System;
-using System.Web.Http.Filters;
-using System.Linq;
-using Ganss.XSS;
-
-public class XssWebApiActionFilter : ActionFilterAttribute
-{
-    private static readonly HtmlSanitizer _sanitizer = new HtmlSanitizer();
-
-    static XssWebApiActionFilter()
-    {
-        _sanitizer.AllowedTags.Clear();
-        _sanitizer.AllowedAttributes.Clear();
-        _sanitizer.AllowDataAttributes = false;
-    }
-
-    public override void OnActionExecuting(System.Web.Http.Controllers.HttpActionContext actionContext)
-    {
-        var arguments = actionContext.ActionArguments;
-        
-        foreach (var arg in arguments)
-        {
-            if (arg.Value is string stringValue && !string.IsNullOrEmpty(stringValue))
-            {
-                var sanitized = _sanitizer.Sanitize(stringValue);
-                if (stringValue != sanitized)
-                {
-                    throw new InvalidOperationException($"XSS content detected in parameter: {arg.Key}");
-                }
-            }
-            else if (arg.Value != null && !IsSimpleType(arg.Value.GetType()))
-            {
-                SanitizeObject(arg.Value);
-            }
-        }
-        
-        base.OnActionExecuting(actionContext);
-    }
-
-    private void SanitizeObject(object obj)
-    {
-        if (obj == null) return;
-        
-        var properties = obj.GetType().GetProperties()
-            .Where(p => p.CanRead && p.CanWrite && p.PropertyType == typeof(string));
-            
-        foreach (var property in properties)
-        {
-            var value = property.GetValue(obj) as string;
-            if (!string.IsNullOrEmpty(value))
-            {
-                var sanitized = _sanitizer.Sanitize(value);
-                if (value != sanitized)
-                {
-                    throw new InvalidOperationException($"XSS content detected in property: {property.Name}");
-                }
-            }
-        }
-    }
-
-    private static bool IsSimpleType(Type type)
-    {
-        return type.IsPrimitive || type == typeof(string) || type == typeof(DateTime) 
-               || type == typeof(decimal) || type == typeof(Guid) || type.IsEnum;
-    }
-}
-```
-
-### 3. Конфигурация и установка
-
-**Установите необходимые пакеты через NuGet:**
-
-```powershell
-Install-Package HtmlSanitizer
-Install-Package Newtonsoft.Json
-```
-
-**Конфигурация в `web.config`:**
-
+**MyApp.SourceGenerator.csproj:**
 ```xml
-<configuration>
-  <system.web>
-    <!-- Включаем AntiXSS энкодер глобально -->
-    <httpRuntime encoderType="System.Web.Security.AntiXss.AntiXssEncoder" 
-                 requestValidationMode="4.5" 
-                 maxRequestLength="4096" />
-    
-    <!-- Включаем request validation -->
-    <pages validateRequest="true" />
-  </system.web>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>12</LangVersion>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>Generated</CompilerGeneratedFilesOutputPath>
+    <OutputItemType>Analyzer</OutputItemType>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+  </PropertyGroup>
 
-  <system.webServer>
-    <!-- Добавляем security headers -->
-    <httpProtocol>
-      <customHeaders>
-        <add name="X-XSS-Protection" value="1; mode=block" />
-        <add name="X-Content-Type-Options" value="nosniff" />
-        <add name="X-Frame-Options" value="DENY" />
-        <add name="Content-Security-Policy" value="default-src 'self'; script-src 'self'; object-src 'none';" />
-        <add name="Referrer-Policy" value="strict-origin-when-cross-origin" />
-      </customHeaders>
-    </httpProtocol>
-  </system.webServer>
-</configuration>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.3.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.5.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Ссылка на Data проект для анализа -->
+  <ItemGroup>
+    <ProjectReference Include="../MyApp.Data/MyApp.Data.csproj" OutputItemType="Analyzer" />
+  </ItemGroup>
+</Project>
 ```
 
-**Регистрация фильтров в `FilterConfig.cs`:**
+**MyApp.API.csproj:**
+```xml
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>Generated</CompilerGeneratedFilesOutputPath>
+  </PropertyGroup>
 
-```csharp
-public class FilterConfig
-{
-    public static void RegisterGlobalFilters(GlobalFilterCollection filters)
-    {
-        // Для MVC контроллеров
-        filters.Add(new XssSanitizeActionFilter());
-        
-        // Остальные фильтры
-        filters.Add(new HandleErrorAttribute());
-    }
-}
+  <ItemGroup>
+    <ProjectReference Include="../MyApp.Data/MyApp.Data.csproj" />
+    <ProjectReference Include="../MyApp.SourceGenerator/MyApp.SourceGenerator.csproj" 
+                      OutputItemType="Analyzer" 
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <!-- Исключение сгенерированных файлов из двойной компиляции -->
+  <ItemGroup>
+    <Compile Remove="$(CompilerGeneratedFilesOutputPath)/**/*.cs" />
+  </ItemGroup>
+</Project>
 ```
 
-**Регистрация фильтров для Web API в `WebApiConfig.cs`:**
+**MyApp.Data.csproj:**
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
 
-```csharp
-public static class WebApiConfig
-{
-    public static void Register(HttpConfiguration config)
-    {
-        // Web API filters
-        config.Filters.Add(new XssWebApiActionFilter());
-        
-        // Routes
-        config.MapHttpAttributeRoutes();
-        
-        config.Routes.MapHttpRoute(
-            name: "DefaultApi",
-            routeTemplate: "api/{controller}/{id}",
-            defaults: new { id = RouteParameter.Optional }
-        );
-    }
-}
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.0" />
+  </ItemGroup>
+</Project>
 ```
 
-### 4. Примеры использования
+## Реализация Source Generator
 
-**Пример защищенного MVC контроллера:**
+### Пример DbContext в Data проекте
 
 ```csharp
-[XssSanitizeActionFilter]
-public class HomeController : Controller
+// MyApp.Data/ApplicationDbContext.cs
+public class ApplicationDbContext : DbContext
 {
-    [HttpPost]
-    public ActionResult ProcessData(UserModel model)
-    {
-        if (!ModelState.IsValid)
-            return BadRequest(ModelState);
-            
-        // Данные уже проверены фильтром на XSS
-        // Безопасно работаем с model.Name, model.Description и т.д.
-        
-        return Json(new { success = true, data = model });
-    }
+    public DbSet<User> Users { get; set; }
+    public DbSet<Product> Products { get; set; }
+    public DbSet<Order> Orders { get; set; }
+
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) 
+        : base(options) { }
 }
 
-public class UserModel
+public class User
 {
-    [Required]
-    [StringLength(100)]
+    public int Id { get; set; }
     public string Name { get; set; }
-    
-    [StringLength(500)]
-    public string Description { get; set; }
+    public string Email { get; set; }
 }
 ```
 
-**Пример защищенного Web API контроллера:**
+### Incremental Source Generator
 
 ```csharp
-[XssWebApiActionFilter]
-public class UsersController : ApiController
+// MyApp.SourceGenerator/DbContextAnalyzer.cs
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
+using System.Text;
+
+[Generator]
+public class DbContextAnalyzer : IIncrementalGenerator
 {
-    [HttpPost]
-    public IHttpActionResult CreateUser(CreateUserRequest request)
+    public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        if (!ModelState.IsValid)
-            return BadRequest(ModelState);
-            
-        // Все строковые поля в request уже проверены на XSS
-        var user = new User
-        {
-            Name = request.Name,
-            Email = request.Email,
-            Bio = request.Bio
-        };
-        
-        // Сохранение в базу данных
-        return Ok(new { userId = user.Id, message = "User created successfully" });
+        // Поиск классов DbContext
+        var dbContextClasses = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                predicate: static (node, _) => IsDbContextClass(node),
+                transform: static (ctx, _) => GetDbContextInfo(ctx))
+            .Where(static m => m is not null);
+
+        // Генерация кода для каждого найденного DbContext
+        context.RegisterSourceOutput(dbContextClasses, 
+            static (spc, dbContextInfo) => GenerateRepositories(spc, dbContextInfo!));
     }
-    
-    [HttpGet]
-    public IHttpActionResult SearchUsers(string query = "")
+
+    private static bool IsDbContextClass(SyntaxNode node)
     {
-        // query parameter автоматически проверен на XSS
-        var users = UserService.Search(query);
+        return node is ClassDeclarationSyntax classDecl && 
+               classDecl.BaseList?.Types.Any(baseType => 
+                   baseType.Type.ToString().Contains("DbContext")) == true;
+    }
+
+    private static DbContextInfo? GetDbContextInfo(GeneratorSyntaxContext context)
+    {
+        var classDecl = (ClassDeclarationSyntax)context.Node;
+        var symbol = context.SemanticModel.GetDeclaredSymbol(classDecl) as INamedTypeSymbol;
+        
+        if (symbol == null) return null;
+
+        // Проверяем, что это действительно DbContext
+        var isDbContext = symbol.BaseType?.Name == "DbContext" || 
+                         IsInheritedFromDbContext(symbol.BaseType);
+
+        if (!isDbContext) return null;
+
+        var dbSets = new List<DbSetInfo>();
+        
+        // Анализируем DbSet свойства
+        foreach (var member in symbol.GetMembers().OfType<IPropertySymbol>())
+        {
+            if (IsDbSetProperty(member))
+            {
+                var entityType = GetDbSetEntityType(member);
+                if (entityType != null)
+                {
+                    dbSets.Add(new DbSetInfo(member.Name, entityType));
+                }
+            }
+        }
+
+        return new DbContextInfo(symbol.Name, symbol.ContainingNamespace.ToDisplayString(), dbSets);
+    }
+
+    private static bool IsInheritedFromDbContext(INamedTypeSymbol? baseType)
+    {
+        while (baseType != null)
+        {
+            if (baseType.Name == "DbContext") return true;
+            baseType = baseType.BaseType;
+        }
+        return false;
+    }
+
+    private static bool IsDbSetProperty(IPropertySymbol property)
+    {
+        return property.Type is INamedTypeSymbol namedType && 
+               namedType.Name == "DbSet" && 
+               namedType.TypeArguments.Length == 1;
+    }
+
+    private static string? GetDbSetEntityType(IPropertySymbol property)
+    {
+        if (property.Type is INamedTypeSymbol namedType && 
+            namedType.TypeArguments.Length == 1)
+        {
+            return namedType.TypeArguments[0].Name;
+        }
+        return null;
+    }
+
+    private static void GenerateRepositories(SourceProductionContext context, DbContextInfo dbContextInfo)
+    {
+        var sb = new StringBuilder();
+        
+        // Генерируем репозитории для каждого DbSet
+        foreach (var dbSet in dbContextInfo.DbSets)
+        {
+            sb.Clear();
+            GenerateRepository(sb, dbContextInfo, dbSet);
+            
+            context.AddSource($"{dbSet.EntityName}Repository.g.cs", 
+                SourceText.From(sb.ToString(), Encoding.UTF8));
+        }
+
+        // Генерируем Unit of Work
+        sb.Clear();
+        GenerateUnitOfWork(sb, dbContextInfo);
+        context.AddSource("UnitOfWork.g.cs", 
+            SourceText.From(sb.ToString(), Encoding.UTF8));
+    }
+
+    private static void GenerateRepository(StringBuilder sb, DbContextInfo dbContextInfo, DbSetInfo dbSet)
+    {
+        sb.AppendLine("// <auto-generated />");
+        sb.AppendLine("using Microsoft.EntityFrameworkCore;");
+        sb.AppendLine($"using {dbContextInfo.Namespace};");
+        sb.AppendLine();
+        sb.AppendLine($"namespace {dbContextInfo.Namespace}.Repositories");
+        sb.AppendLine("{");
+        sb.AppendLine($"    public interface I{dbSet.EntityName}Repository");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        Task<{dbSet.EntityName}?> GetByIdAsync(int id);");
+        sb.AppendLine($"        Task<List<{dbSet.EntityName}>> GetAllAsync();");
+        sb.AppendLine($"        Task<{dbSet.EntityName}> AddAsync({dbSet.EntityName} entity);");
+        sb.AppendLine($"        Task UpdateAsync({dbSet.EntityName} entity);");
+        sb.AppendLine($"        Task DeleteAsync(int id);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine($"    public class {dbSet.EntityName}Repository : I{dbSet.EntityName}Repository");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        private readonly {dbContextInfo.ClassName} _context;");
+        sb.AppendLine();
+        sb.AppendLine($"        public {dbSet.EntityName}Repository({dbContextInfo.ClassName} context)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            _context = context;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine($"        public async Task<{dbSet.EntityName}?> GetByIdAsync(int id)");
+        sb.AppendLine("        {");
+        sb.AppendLine($"            return await _context.{dbSet.PropertyName}.FindAsync(id);");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine($"        public async Task<List<{dbSet.EntityName}>> GetAllAsync()");
+        sb.AppendLine("        {");
+        sb.AppendLine($"            return await _context.{dbSet.PropertyName}.ToListAsync();");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine($"        public async Task<{dbSet.EntityName}> AddAsync({dbSet.EntityName} entity)");
+        sb.AppendLine("        {");
+        sb.AppendLine($"            _context.{dbSet.PropertyName}.Add(entity);");
+        sb.AppendLine("            await _context.SaveChangesAsync();");
+        sb.AppendLine("            return entity;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine($"        public async Task UpdateAsync({dbSet.EntityName} entity)");
+        sb.AppendLine("        {");
+        sb.AppendLine($"            _context.{dbSet.PropertyName}.Update(entity);");
+        sb.AppendLine("            await _context.SaveChangesAsync();");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine($"        public async Task DeleteAsync(int id)");
+        sb.AppendLine("        {");
+        sb.AppendLine($"            var entity = await GetByIdAsync(id);");
+        sb.AppendLine("            if (entity != null)");
+        sb.AppendLine("            {");
+        sb.AppendLine($"                _context.{dbSet.PropertyName}.Remove(entity);");
+        sb.AppendLine("                await _context.SaveChangesAsync();");
+        sb.AppendLine("            }");
+        sb.AppendLine("        }");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+    }
+
+    private static void GenerateUnitOfWork(StringBuilder sb, DbContextInfo dbContextInfo)
+    {
+        sb.AppendLine("// <auto-generated />");
+        sb.AppendLine($"using {dbContextInfo.Namespace};");
+        sb.AppendLine($"using {dbContextInfo.Namespace}.Repositories;");
+        sb.AppendLine();
+        sb.AppendLine($"namespace {dbContextInfo.Namespace}.Services");
+        sb.AppendLine("{");
+        sb.AppendLine("    public interface IUnitOfWork");
+        sb.AppendLine("    {");
+        
+        foreach (var dbSet in dbContextInfo.DbSets)
+        {
+            sb.AppendLine($"        I{dbSet.EntityName}Repository {dbSet.EntityName}Repository {{ get; }}");
+        }
+        
+        sb.AppendLine("        Task<int> SaveChangesAsync();");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    public class UnitOfWork : IUnitOfWork");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        private readonly {dbContextInfo.ClassName} _context;");
+        sb.AppendLine();
+        
+        foreach (var dbSet in dbContextInfo.DbSets)
+        {
+            sb.AppendLine($"        public I{dbSet.EntityName}Repository {dbSet.EntityName}Repository {{ get; }}");
+        }
+        
+        sb.AppendLine();
+        sb.AppendLine($"        public UnitOfWork({dbContextInfo.ClassName} context)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            _context = context;");
+        
+        foreach (var dbSet in dbContextInfo.DbSets)
+        {
+            sb.AppendLine($"            {dbSet.EntityName}Repository = new {dbSet.EntityName}Repository(_context);");
+        }
+        
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        public async Task<int> SaveChangesAsync()");
+        sb.AppendLine("        {");
+        sb.AppendLine("            return await _context.SaveChangesAsync();");
+        sb.AppendLine("        }");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+    }
+}
+
+// Вспомогательные классы
+public record DbContextInfo(string ClassName, string Namespace, List<DbSetInfo> DbSets);
+public record DbSetInfo(string PropertyName, string EntityName);
+```
+
+## Регистрация сервисов в API проекте
+
+```csharp
+// MyApp.API/Program.cs
+using MyApp.Data;
+using MyApp.Data.Services;
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Регистрация DbContext
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// Регистрация сгенерированных репозиториев
+builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
+
+var app = builder.Build();
+app.Run();
+```
+
+## Использование в API контроллерах
+
+```csharp
+// MyApp.API/Controllers/UsersController.cs
+[ApiController]
+[Route("api/[controller]")]
+public class UsersController : ControllerBase
+{
+    private readonly IUnitOfWork _unitOfWork;
+
+    public UsersController(IUnitOfWork unitOfWork)
+    {
+        _unitOfWork = unitOfWork;
+    }
+
+    [HttpGet]
+    public async Task<ActionResult<List<User>>> GetUsers()
+    {
+        var users = await _unitOfWork.UserRepository.GetAllAsync();
         return Ok(users);
     }
+
+    [HttpGet("{id}")]
+    public async Task<ActionResult<User>> GetUser(int id)
+    {
+        var user = await _unitOfWork.UserRepository.GetByIdAsync(id);
+        return user == null ? NotFound() : Ok(user);
+    }
 }
 ```
 
-## Тестирование защиты
+## Ключевые моменты реализации
 
-Данное решение блокирует следующие типы XSS-атак[1][2][3]:
+### 1. Зависимости между проектами
+- Source Generator должен ссылаться на Data проект с `OutputItemType="Analyzer"`[1]
+- API проект ссылается на Data и Source Generator проекты[2]
+- Blazor проект ссылается только на API[2]
 
-| Тип атаки | Пример payload | Результат |
-|-----------|----------------|-----------|
-| Script injection | `<script>alert('XSS')</script>` | ✅ Заблокировано |
-| Event handler | `<img src=x onerror=alert(1)>` | ✅ Заблокировано |
-| Javascript URL | `javascript:alert(document.cookie)` | ✅ Заблокировано |
-| CSS injection | `<div style="background:url(javascript:alert(1))">` | ✅ Заблокировано |
-| SVG XSS | `<svg onload=alert(1)>` | ✅ Заблокировано |
-| Iframe injection | `<iframe src="javascript:alert(1)">` | ✅ Заблокировано |
+### 2. Конфигурация Source Generator
+- Обязательно использовать `netstandard2.0` для Source Generator проекта[3][2]
+- Настроить `EmitCompilerGeneratedFiles=true` для отладки[4]
+- Исключить сгенерированные файлы из компиляции в целевом проекте[4]
 
-## Производительность и рекомендации
+### 3. Анализ кросс-проектных зависимостей
+Source Generator может анализировать типы из других проектов через `context.Compilation.References` и получать доступ к символам через `context.Compilation.GetAssemblyOrModuleSymbol()`.[5]
 
-**Производительность**: 
-- Middleware обрабатывает ~1000 запросов/сек с минимальной задержкой[4]
-- HtmlSanitizer работает быстрее чем регулярные выражения для сложных случаев[2]
-- Кэширование результатов санитизации для повторяющихся значений
+### 4. Отладка и тестирование
+Используйте `Debugger.Launch()` в Source Generator для отладки и проверьте узел "Analyzers" в Solution Explorer для контроля работы генератора.[6]
 
-**Рекомендации по внедрению**:
-1. **Тестируйте постепенно**: начните с одного контроллера[5]
-2. **Мониторинг**: логируйте заблокированные запросы для анализа[1]
-3. **Настройка**: адаптируйте правила под специфику вашего API[6]
-4. **Backup план**: имейте возможность быстро отключить защиту при сбоях
-
-Это решение предоставляет комплексную защиту от XSS на всех уровнях вашего ASP.NET Framework 4.6.2 API и основано на проверенных производственных практиках[7][8][9].
+Такая архитектура обеспечивает чистое разделение слоёв, позволяет Source Generator анализировать DbContext из Data проекта и генерировать нужный код в API проекте, что полностью соответствует вашим требованиям для .NET 8.
 
 Источники
-[1] How to Use AntiXssMiddleware in .NET Core https://www.loginradius.com/blog/engineering/anti-xss-middleware-asp-core
-[2] HtmlSanitizer 9.0.886 - NuGet https://www.nuget.org/packages/HtmlSanitizer/
-[3] Cross Site Scripting Prevention - OWASP Cheat Sheet Series https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html
-[4] Preventing XSS in .NET Core Web APIs - CodeProject https://www.codeproject.com/Articles/5313718/Preventing-XSS-in-NET-Core-Web-APIs
-[5] Preventing XSS in .NET Core Web Apis - Jason Sultana https://jason.sultana.net.au/dotnet/security/apis/2021/09/26/preventing-xss-in-netcore-webapi.html
-[6] Input sanitization using the HTMLSanitizer library - Packt+ | Advance ... https://www.packtpub.com/en-PL/product/aspnet-core-5-secure-coding-cookbook-9781801071567/chapter/chapter-1-secure-coding-fundamentals-1/section/input-sanitization-using-the-htmlsanitizer-library-ch01lvl1sec08
-[7] c# - Stopping XSS when using WebAPI - Stack Overflow https://stackoverflow.com/questions/12618432/stopping-xss-when-using-webapi
-[8] How to protect against XSS in ASP.NET Core? - Stack Overflow https://stackoverflow.com/questions/52239262/how-to-protect-against-xss-in-asp-net-core
-[9] DotNet Security - OWASP Cheat Sheet Series https://cheatsheetseries.owasp.org/cheatsheets/DotNet_Security_Cheat_Sheet.html
-[10] ASP.NET Web API and potential XSS https://security.stackexchange.com/questions/47400/asp-net-web-api-and-potential-xss
-[11] Preventing XSS in ASP.NET - Code - Envato Tuts+ https://code.tutsplus.com/preventing-xss-in-aspnet--cms-21801t
-[12] How to sanitize input in an application that is of .NET Framework 4.7 ... https://learn.microsoft.com/en-us/answers/questions/1520400/how-to-sanitize-input-in-an-application-that-is-of
-[13] ASP WebApi - how to handle potential XSS attacks - Stack Overflow https://stackoverflow.com/questions/22809314/asp-webapi-how-to-handle-potential-xss-attacks
-[14] How to prevent XSS attacks in ASP .NET Core Web API - YouTube https://www.youtube.com/watch?v=ecF6g0dFnKc
-[15] Preventing XSS in ASP.Net Made Easy - C# Corner https://www.c-sharpcorner.com/UploadFile/a53555/preventing-xss-in-Asp-Net-made-easy/
-[16] AntiXSS in .NET Framework 4.7 web application - how to apply it https://stackoverflow.com/questions/65707334/antixss-in-net-framework-4-7-web-application-how-to-apply-it
-[17] Irrelevant to web API? #28789 - dotnet/AspNetCore.Docs - GitHub https://github.com/dotnet/AspNetCore.Docs/issues/28789
-[18] Prevent Cross-Site Scripting (XSS) in ASP.NET Core | Microsoft Learn https://learn.microsoft.com/en-us/aspnet/core/security/cross-site-scripting?view=aspnetcore-9.0
-[19] [PDF] A Systematic Analysis of XSS Sanitization in Web Application ... https://people.eecs.berkeley.edu/~dawnsong/papers/2011%20systematic%20analysis%20xss
-[20] 10 Points to Secure ASP.NET Core MVC Applications - ScholarHat https://www.scholarhat.com/tutorial/aspnet/tips-to-secure-aspnet-core-mvc-applications
-[21] Implementing Security Headers in ASP.NET Core 7.0 Web API https://github.com/bilalmehrban/AspDotNetCore-WebApi-Security-Headers
-[22] Complete Guide to Content Security Policy (CSP) in ASP.NET https://www.atharvasystem.com/the-complete-guide-to-content-security-policy-csp-in-asp-net/
-[23] .NET Security Promise: Security Features in .NET Applications https://arnasoftech.com/the-net-security-promise-an-overview-of-the-security-features-in-net-applications/
-[24] Guide to .NET XSS: Prevention and Examples - StackHawk https://www.stackhawk.com/blog/net-xss-examples-and-prevention/
-[25] goran-mustafa/DotNetXssMiddleware - GitHub https://github.com/goran-mustafa/DotNetXssMiddleware
-[26] AntiXSS in ASP.Net Core - Stack Overflow https://stackoverflow.com/questions/37923431/antixss-in-asp-net-core
-[27] How to authenticate ASP.NET MVC web app to access Web API ... https://learn.microsoft.com/en-us/answers/questions/926550/how-to-authenticate-asp-net-mvc-web-app-to-access
-[28] Ways Developer Can Secure An ASP.NET Application, Part 1 https://rodansotto.wordpress.com/2015/11/02/ways-developer-can-secure-an-asp-net-application-part-1/
-[29] Consuming ASP.NET Web API in ASP.NET MVC with Visual Studio ... https://www.youtube.com/watch?v=jMIPAen4CFQ
-[30] Защита ASP.NET приложений от взлома - Habr https://habr.com/ru/companies/microsoft/articles/350760/
-[31] Connecting a Web API With an ASP.NET Core MVC Application https://www.telerik.com/blogs/connecting-web-api-aspnet-core-mvc-application
-[32] Data Validation and Sanitization for Secure .NET Core APIs | MoldStud https://moldstud.com/articles/p-essential-data-validation-and-sanitization-strategies-for-securing-net-core-apis
-[33] How to Deploy an ASP.NET Web API - Server Fault https://serverfault.com/questions/448258/how-to-deploy-an-asp-net-web-api-and-browser-based-application-to-a-production
-[34] Microsoft .net Framework 4.6.2 security vulnerabilities, CVEs https://www.cvedetails.com/version/560044/Microsoft-.net-Framework-4.6.2.html
-[35] c# how to allow embedded image HtmlSanitizer - xss - Stack Overflow https://stackoverflow.com/questions/62573677/c-sharp-how-to-allow-embedded-image-htmlsanitizer
-[36] Make your .NET application secure - TheCodeMan https://thecodeman.net/posts/make-dotnet-application-secure
-[37] HTTP Security Headers in ASP.NET - DEV Community https://dev.to/fabriziobagala/http-security-headers-in-net-9go
-[38] ASP.NET Core code samples for preventing XSS - GitHub https://github.com/securecodeninja/aspnetcore-antixss-samples
-[39] How to implement AntiXss Middleware in .NET Core Web - Reddit https://www.reddit.com/r/csharp/comments/igxbmr/how_to_implement_antixss_middleware_in_net_core/
-[40] Content Security Policy Middleware for ASP.NET Core - GitHub https://github.com/erwindevreugd/ContentSecurityPolicy
-[41] How to Implement Security in ASP Net Web Application https://tolumichael.com/how-to-implement-security-in-asp-net-web-application/
-[42] Write custom ASP.NET Core middleware - Learn Microsoft https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/write?view=aspnetcore-9.0
-[43] AspNetCore.Docs/aspnetcore/security/anti-request-forgery.md at ... https://github.com/dotnet/AspNetCore.Docs/blob/main/aspnetcore/security/anti-request-forgery.md
-[44] CorsMiddlewareExtensions.cs - GitHub https://github.com/dotnet/aspnetcore/blob/master/src/Middleware/CORS/src/Infrastructure/CorsMiddlewareExtensions.cs
-[45] asp-net-core · GitHub Topics https://github.com/topics/asp-net-core?l=css
-[46] Design: Failure when UseMiddleware(args) is used · Issue #10502 https://github.com/aspnet/EntityFrameworkCore/issues/10502
-[47] OwaspHeaders.Core 9.7.2 - NuGet https://www.nuget.org/packages/OwaspHeaders.Core/
-[48] Prevent Cross-Site Request Forgery (XSRF/CSRF) attacks in ASP ... https://learn.microsoft.com/en-us/aspnet/core/security/anti-request-forgery?view=aspnetcore-9.0
-[49] guardrailsio/awesome-dotnet-security - GitHub https://github.com/guardrailsio/awesome-dotnet-security
-[50] Enable Cross-Origin Requests (CORS) in ASP.NET Core https://learn.microsoft.com/en-us/aspnet/core/security/cors?view=aspnetcore-9.0
-[51] ASP.NET Core, an open-source web development framework https://dotnet.microsoft.com/en-us/apps/aspnet
-[52] Avoiding Cross-Site Scripting (XSS) in a C# .NET Project https://blog.stackademic.com/avoiding-cross-site-scripting-xss-in-a-c-net-project-b4a5c113b5fc
-[53] .NET HTML Sanitation for rich HTML Input - Rick Strahl's Web Log https://weblog.west-wind.com/posts/2012/jul/19/net-html-sanitation-for-rich-html-input
-[54] How to prevent XSS with HTML/PHP ? - GeeksforGeeks https://www.geeksforgeeks.org/php/how-to-prevent-xss-with-html-php/
-[55] How to avoid XSS in this asp.net code, url - Stack Overflow https://stackoverflow.com/questions/75573063/how-to-avoid-xss-in-this-asp-net-code-url-http-localhost-tiles-showpage-asp
-[56] Net Framework 4.6.2 MVC Application. · Issue #2059 - GitHub https://github.com/IdentityServer/IdentityServer4/issues/2059
-[57] ASP.NET Core Middleware | Microsoft Learn https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/?view=aspnetcore-9.0
-[58] XSS: attack, defense - and C# programming - PVS-Studio https://pvs-studio.com/en/blog/posts/csharp/0857/
-[59] Preventing XSS Attacks in ASP.NET Core Web API - C# Corner https://www.c-sharpcorner.com/article/preventing-xss-attacks-in-asp-net-core-web-api/
-[60] DotNet Security Cheat Sheet - GitHub https://github.com/nokia/OWASP-CheatSheetSeries/blob/master/cheatsheets/DotNet_Security_Cheat_Sheet.md
-[61] 10 Points to Secure ASP.NET Core MVC Applications https://sd.blackball.lv/articles/read/18827
-[62] Security and Quality Rollup for .NET Framework 3.5, 4.5.2, 4.6, 4.6.1 ... https://support.microsoft.com/ru-ru/topic/security-and-quality-rollup-for-net-framework-3-5-4-5-2-4-6-4-6-1-4-6-2-4-7-4-7-1-4-7-2-4-8-for-windows-server-2012-kb4556400-1f5cd9e3-f65c-da6a-acc4-18cc18ff5d3b
-[63] A Deep Dive into XSS Filters for NET Core Applications | MoldStud https://moldstud.com/articles/p-exploring-the-intricacies-of-xss-filters-in-net-core-applications-for-enhanced-web-security
-[64] [PDF] Contrast Documentation - Contrast Security https://docs.contrastsecurity.com/Contrast_Documentation_3_8_11_5-en.pdf
+[1] Reference local projects in Source Generator #47517 https://github.com/dotnet/roslyn/discussions/47517
+[2] Dotnet Source Generators in 2024 Part 1: Getting Started https://posts.specterops.io/dotnet-source-generators-in-2024-part-1-getting-started-76d619b633f5
+[3] Impossible to implement Source Generators for projects ... https://github.com/dotnet/roslyn/issues/70922
+[4] How to set up the project properties for Source Generators https://www.ankursheel.com/blog/setup-project-properties-source-generators
+[5] c# - .NET 6 source generator - create classes within ... https://stackoverflow.com/questions/74094151/net-6-source-generator-create-classes-within-another-project
+[6] C# Source Generator not including results from Project ... https://stackoverflow.com/questions/69764185/c-sharp-source-generator-not-including-results-from-project-reference
+[7] Purpose of EF 6.x DbContext Generator option when ... https://stackoverflow.com/questions/22791170/purpose-of-ef-6-x-dbcontext-generator-option-when-adding-a-new-data-item-in-visu
+[8] Issue #108164 · dotnet/runtime https://github.com/dotnet/runtime/issues/107926
+[9] Deploying a C# source generator project that includes ... https://stackoverflow.com/questions/71367501/deploying-a-c-sharp-source-generator-project-that-includes-references-to-other-p
+[10] Source Generator for EFCore for DB First users. #27553 https://github.com/dotnet/efcore/issues/27553
+[11] C# Source Generator Build Issues between Projects https://www.reddit.com/r/csharp/comments/1e7xt6j/c_source_generator_build_issues_between_projects/
+[12] Compile-time configuration source generation - .NET https://learn.microsoft.com/en-us/dotnet/core/extensions/configuration-generator
+[13] Dotnet Source Generators in 2024 Part 1: Getting Started https://specterops.io/blog/2024/10/01/dotnet-source-generators-in-2024-part-1-getting-started/
+[14] The .NET Compiler Platform SDK (Roslyn APIs) - C# https://learn.microsoft.com/en-us/dotnet/csharp/roslyn-sdk/
+[15] Deep dive into Source Generators https://thecodeman.net/posts/source-generators-deep-dive
+[16] Using C# Source Generators to Generate Data Transfer ... https://amanagrawal.blog/2021/07/27/using-c-sharp-source-generators-to-generate-dtos/
+[17] Adapt Code Generation Based on Project Dependencies https://www.thinktecture.com/net/roslyn-source-generators-code-according-to-dependencies/
+[18] Introducing C# Source Generators - .NET Blog https://devblogs.microsoft.com/dotnet/introducing-c-source-generators/
+[19] amis92/csharp-source-generators: A list of C# ... https://github.com/amis92/csharp-source-generators
+[20] Incremental Roslyn Source Generators In .NET 6 https://www.thinktecture.com/net/roslyn-source-generators-introduction/
+[21] Can incremental generators be used with .NET 8+? : r/csharp https://www.reddit.com/r/csharp/comments/1g8y03p/can_incremental_generators_be_used_with_net_8/
+[22] .NET Handbook | Best Practices / Source Generators https://infinum.com/handbook/dotnet/best-practices/source-generators
+[23] How to use source generation in System.Text.Json - .NET https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/source-generation
+[24] Source Generators and Metaprogramming in .NET - DevOps.dev https://blog.devops.dev/source-generators-and-metaprogramming-in-net-5c92fd513115
+[25] Generated interface implementations for Entity Framework ... https://github.com/jscarle/GeneratedEntityFramework
+[26] Mastering Incremental Source Generators in C# Complete ... https://blog.elmah.io/mastering-incremental-source-generators-in-csharp-a-complete-guide-with-example/
+[27] Unable to create a DbContext' Error when Using EF Core ... https://learn.microsoft.com/en-us/answers/questions/1689899/unable-to-create-a-dbcontext-error-when-using-ef-c
+[28] c# - Access multiple projects from IIncrementalGenerator https://stackoverflow.com/questions/72729428/access-multiple-projects-from-iincrementalgenerator
+[29] Incremental Roslyn Source Generators: Using 3rd-Party ... https://www.thinktecture.com/net/roslyn-source-generators-using-3rd-party-libraries/
+[30] Debug Source Generators in JetBrains Rider https://blog.jetbrains.com/dotnet/2023/07/13/debug-source-generators-in-jetbrains-rider/
+[31] Source Generators in C# https://code-maze.com/csharp-source-generators/
+[32] Source generated ValueConverter with EF Core https://stackoverflow.com/questions/78987023/source-generated-valueconverter-with-ef-core
+[33] Source generator with dependency : r/csharp https://www.reddit.com/r/csharp/comments/kledw3/source_generator_with_dependency/
+[34] Manual: Create and use a source generator https://docs.unity3d.com/6000.2/Documentation/Manual/create-source-generator.html
+[35] Let's Build an Incremental Source Generator With Roslyn ... https://www.youtube.com/watch?v=azJm_Y2nbAI
+[36] Using MSBuild Items and Properties in C# 9 Source ... https://platform.uno/blog/using-msbuild-items-and-properties-in-c-9-source-generators/
+[37] Reverse Engineering Existing Databases with Entity ... https://blog.jetbrains.com/dotnet/2023/07/20/reverse-engineering-existing-databases-with-entity-framework-core/
+[38] Source generator - Microsoft Q&A https://learn.microsoft.com/en-sg/answers/questions/2281988/source-generator
+[39] Structuring a .NET Core 9 Blazor + API Architecture for ... https://learn.microsoft.com/en-us/answers/questions/5544857/structuring-a-net-core-9-blazor-api-architecture-f
+[40] Use multiple project in c# source generator https://stackoverflow.com/questions/65508732/use-multiple-project-in-c-sharp-source-generator
+[41] neozhu/CleanArchitectureWithBlazorServer https://github.com/neozhu/CleanArchitectureWithBlazorServer
+[42] How to Test Roslyn Source Generators - Gérald Barré https://www.meziantou.net/how-to-test-roslyn-source-generators.htm
+[43] Building a Blazor Frontend with API for Separate Backend ... https://www.reddit.com/r/csharp/comments/1fax0c7/help_needed_building_a_blazor_frontend_with_api/
+[44] Source generator - how to reference a project? #48746 https://github.com/dotnet/roslyn/discussions/48746
+[45] ASP.NET Core Blazor project structure https://learn.microsoft.com/en-us/aspnet/core/blazor/project-structure?view=aspnetcore-9.0
+[46] Configuration in ASP.NET Core https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/?view=aspnetcore-9.0
+[47] Building a Clean Architecture with Blazor https://dotnet8.patrickgod.com/posts/building-a-clean-architecture-with-blazor
+[48] Incremental Roslyn Source Generators: Using Additional ... https://www.thinktecture.com/net/roslyn-source-generators-using-additional-files/
+[49] Blazor Fundamentals #5 - Building a Backend API https://www.youtube.com/watch?v=IyGvEEK24i4
+[50] Blazor Hero - Clean Architecture Template Quick Start Guide # Совместимость Source Generator (.NET Standard 2.0) с проектом Data (.NET 8.0)
+
+**Да, могут быть проблемы**, но они решаемы. Рассмотрю основные моменты и способы их решения.
+
+## Основные ограничения
+
+### Требование NET Standard 2.0 для Source Generator
+
+Source Generator **обязательно** должен использовать `netstandard2.0` — это фундаментальное требование Roslyn. Это связано с тем, что:[1][2][3]
+
+- Компилятор .NET сам работает на .NET Standard 2.0[1]
+- Source Generator загружается компилятором как сборка, которая должна быть совместима с его версией[2]
+- Поддержка работы как в Visual Studio (.NET Framework), так и в dotnet CLI (.NET Core)[4]
+
+### Проблема анализа .NET 8.0 проекта
+
+Когда Source Generator (`netstandard2.0`) пытается проанализировать проект Data (`.NET 8.0`), возникают следующие проблемы:[5][6]
+
+- Невозможность прямой ссылки на проект .NET 8.0 из netstandard2.0
+- Ошибки загрузки сборок с несовместимыми версиями
+- Недоступность новых API .NET 8.0
+
+## Решения проблемы
+
+### 1. Анализ через Compilation API (Рекомендуемый)
+
+Source Generator не нужно напрямую ссылаться на Data проект. Вместо этого используйте Roslyn API для анализа:
+
+```csharp
+[Generator]
+public class DbContextAnalyzer : IIncrementalGenerator
+{
+    public void Initialize(IncrementalGeneratorInitializationContext context)
+    {
+        var dbContextClasses = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                predicate: static (node, _) => IsDbContextClass(node),
+                transform: static (ctx, _) => AnalyzeDbContext(ctx))
+            .Where(static m => m is not null);
+
+        context.RegisterSourceOutput(dbContextClasses, GenerateCode);
+    }
+
+    private static DbContextInfo? AnalyzeDbContext(GeneratorSyntaxContext context)
+    {
+        // Анализируем DbContext через SemanticModel
+        var symbol = context.SemanticModel.GetDeclaredSymbol(context.Node);
+        
+        // Получаем информацию о типах через Compilation
+        var compilation = context.SemanticModel.Compilation;
+        
+        // Анализируем DbSet свойства без прямой ссылки на EF Core
+        // Используем только информацию из символов
+        
+        return new DbContextInfo(/* данные из анализа */);
+    }
+}
+```
+
+### 2. Shared Source Files
+
+Создайте общие файлы с базовыми типами для обмена между проектами:[7][2]
+
+```
+Solution/
+├── MyApp.Shared/           (netstandard2.0)
+│   ├── IEntity.cs
+│   ├── DbContextInfo.cs
+│   └── EntityMetadata.cs
+├── MyApp.Data/             (net8.0, ссылается на Shared)
+│   └── ApplicationDbContext.cs
+└── MyApp.SourceGenerator/  (netstandard2.0, ссылается на Shared)
+    └── DbContextAnalyzer.cs
+```
+
+**MyApp.Shared/DbContextInfo.cs:**
+```csharp
+// netstandard2.0 совместимый код
+public class DbContextInfo
+{
+    public string ClassName { get; set; }
+    public string Namespace { get; set; }
+    public List<EntityInfo> Entities { get; set; }
+}
+
+public class EntityInfo
+{
+    public string Name { get; set; }
+    public string PropertyName { get; set; }
+}
+```
+
+### 3. MSBuild Property передача
+
+Используйте MSBuild для передачи метаданных в Source Generator:[8]
+
+**MyApp.Data.csproj:**
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+
+  <!-- Передаём информацию о DbContext в Source Generator -->
+  <ItemGroup>
+    <CompilerVisibleProperty Include="DbContextClassName" />
+    <CompilerVisibleProperty Include="DbContextNamespace" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <DbContextClassName>ApplicationDbContext</DbContextClassName>
+    <DbContextNamespace>MyApp.Data</DbContextNamespace>
+  </PropertyGroup>
+</Project>
+```
+
+**В Source Generator:**
+```csharp
+public void Initialize(IncrementalGeneratorInitializationContext context)
+{
+    var configOptions = context.AnalyzerConfigOptionsProvider
+        .Select((provider, _) => 
+        {
+            provider.GlobalOptions.TryGetValue("build_property.DbContextClassName", out var className);
+            provider.GlobalOptions.TryGetValue("build_property.DbContextNamespace", out var namespaceName);
+            return new { ClassName = className, Namespace = namespaceName };
+        });
+}
+```
+
+### 4. Conditional Compilation
+
+Используйте условную компиляцию для обработки разных версий .NET:[9]
+
+```csharp
+// В Source Generator (netstandard2.0)
+private static string GenerateRepositoryMethod(string entityName)
+{
+    return $@"
+#if NET8_0_OR_GREATER
+        public async Task<{entityName}?> GetByIdAsync(int id, CancellationToken cancellationToken = default)
+        {{
+            return await _context.{entityName}s.FindAsync(new object[] {{ id }}, cancellationToken);
+        }}
+#else
+        public async Task<{entityName}> GetByIdAsync(int id)
+        {{
+            return await _context.{entityName}s.FindAsync(id);
+        }}
+#endif";
+}
+```
+
+## Настройка проектов
+
+### API проект конфигурация
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../MyApp.Data/MyApp.Data.csproj" />
+    
+    <!-- Source Generator без ссылки на выходную сборку -->
+    <ProjectReference Include="../MyApp.SourceGenerator/MyApp.SourceGenerator.csproj" 
+                      ReferenceOutputAssembly="false" 
+                      OutputItemType="Analyzer" 
+                      PrivateAssets="all" />
+  </ItemGroup>
+</Project>
+```
+
+### Отладка и тестирование
+
+Для отладки Source Generator с .NET 8.0 проектом:[10]
+
+```csharp
+[Generator]
+public class DbContextAnalyzer : IIncrementalGenerator
+{
+    public void Initialize(IncrementalGeneratorInitializationContext context)
+    {
+        try
+        {
+            // Основная логика генератора
+        }
+        catch (Exception ex)
+        {
+            // Выводим ошибки как диагностику компилятора
+            context.RegisterPostInitializationOutput(ctx =>
+            {
+                var descriptor = new DiagnosticDescriptor(
+                    "SG001", "Source Generator Error", 
+                    $"Error: {ex.Message}\nStack: {ex.StackTrace}",
+                    "SourceGenerator", DiagnosticSeverity.Error, true);
+                
+                ctx.ReportDiagnostic(Diagnostic.Create(descriptor, Location.None));
+            });
+        }
+    }
+}
+```
+
+## Итоговая рекомендация
+
+**Используйте подход с анализом через Roslyn API** без прямых ссылок на .NET 8.0 проект. Source Generator должен анализировать код через `SemanticModel` и `Compilation`, получая всю необходимую информацию о DbContext и его свойствах через метаданные компилятора. Это обеспечивает полную совместимость между netstandard2.0 и net8.0 проектами.[11][7]
+
+Источники
+[1] Dotnet Source Generators in 2024 Part 1: Getting Started https://posts.specterops.io/dotnet-source-generators-in-2024-part-1-getting-started-76d619b633f5
+[2] Don't limit Source Generators to "netstandard2.0" target ... https://github.com/dotnet/roslyn/issues/45162
+[3] C# Source Generator - warning CS8032: An instance of ... https://stackoverflow.com/questions/65479888/c-sharp-source-generator-warning-cs8032-an-instance-of-analyzer-cannot-be-cre
+[4] Dotnet Source Generators in 2024 Part 1: Getting Started https://specterops.io/blog/2024/10/01/dotnet-source-generators-in-2024-part-1-getting-started/
+[5] Roslyn plugins (analyzers, source generators) target .NET ... https://github.com/dotnet/roslyn-analyzers/issues/7302
+[6] Impossible to implement Source Generators for projects ... https://github.com/dotnet/roslyn/issues/70922
+[7] Reference local projects in Source Generator #47517 https://github.com/dotnet/roslyn/discussions/47517
+[8] Determining target framework in source generators #72069 https://github.com/dotnet/roslyn/discussions/72069
+[9] What is the max C# version a source generator library can ... https://stackoverflow.com/questions/77840701/what-is-the-max-c-sharp-version-a-source-generator-library-can-target
+[10] Debug Source Generators in JetBrains Rider https://blog.jetbrains.com/dotnet/2023/07/13/debug-source-generators-in-jetbrains-rider/
+[11] Introducing C# Source Generators - .NET Blog https://devblogs.microsoft.com/dotnet/introducing-c-source-generators/
+[12] c# - Roslyn source generator is "ignored"? https://stackoverflow.com/questions/75133482/roslyn-source-generator-is-ignored
+[13] The .NET Compiler Platform SDK (Roslyn APIs) - C# https://learn.microsoft.com/en-us/dotnet/csharp/roslyn-sdk/
+[14] Can incremental generators be used with .NET 8+? : r/csharp https://www.reddit.com/r/csharp/comments/1g8y03p/can_incremental_generators_be_used_with_net_8/
+[15] Performance Improvements in .NET 8 https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-8/
+[16] Incremental Roslyn Source Generators In .NET 6 https://www.thinktecture.com/net/roslyn-source-generators-introduction/
+[17] Use of NETStandard 2.0 in NET 8.0 project, conflicts with ... https://stackoverflow.com/questions/78737605/use-of-netstandard-2-0-in-net-8-0-project-conflicts-with-netstandard-2-1
+[18] C#, .NET, How can I make a code generator download ... https://learn.microsoft.com/en-us/answers/questions/2284156/c-net-how-can-i-make-a-code-generator-download-whe
+[19] Roslyn Source Generators (via project references) aren't ... https://youtrack.jetbrains.com/projects/RIDER/issues/RIDER-128288/Roslyn-Source-Generators-via-project-references-arent-supported-in-IDE-Cannot-resolve-symbol
+[20] Understanding source generators https://dev.to/serhii_korol_ab7776c50dba/understanding-source-generators-60a
+[21] .Net Code Generation. Part 6. C# Source Generators | Михаил ... https://mihailromanov.wordpress.com/2021/01/31/net-code-generation-part-6-c-source-generators/
+[22] How to make libraries compatible with native AOT - .NET ... https://devblogs.microsoft.com/dotnet/creating-aot-compatible-libraries/
+[23] Target dotnet project for net8.0 and net8.0-windows https://stackoverflow.com/questions/77947866/target-dotnet-project-for-net8-0-and-net8-0-windows
+[24] Compile-time configuration source generation - .NET https://learn.microsoft.com/en-us/dotnet/core/extensions/configuration-generator
+[25] .NET Handbook | Best Practices / Source Generators https://infinum.com/handbook/dotnet/best-practices/source-generators
+[26] AOT compile gives incorrect error about Roslyn source ... https://github.com/dotnet/sdk/issues/37228
+[27] Source Generator Running on Indirectly Associated Projects https://stackoverflow.com/questions/76672382/source-generator-running-on-indirectly-associated-projects
+[28] ComWrappers source generation - .NET https://learn.microsoft.com/en-us/dotnet/standard/native-interop/comwrappers-source-generation
+[29] ASP.NET Core updates in .NET 8 Preview 3 https://devblogs.microsoft.com/dotnet/asp-net-core-updates-in-dotnet-8-preview-3/
+[30] Source Generators Not Generating Sources · Issue #49249 https://github.com/dotnet/roslyn/issues/49249
+[31] SourceGenerator.Foundations 2.0.13 https://www.nuget.org/packages/SourceGenerator.Foundations
+[32] C# Source Generator Build Issues between Projects https://www.reddit.com/r/csharp/comments/1e7xt6j/c_source_generator_build_issues_between_projects/
+
