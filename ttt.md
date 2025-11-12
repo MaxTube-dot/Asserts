@@ -1,41 +1,24 @@
-Вот полный пример, который демонстрирует:
+Для удаления домена из названий файлов моков нужно в скрипте Node.js при генерации ключа использовать только путь и параметры URL, без протокола и домена. Аналогично в interceptor надо так же формировать ключ без домена.
 
-1. Как из HAR экспортировать моки (GET и POST запросы с учётом тела для POST).
-2. Как эти моки использовать в Angular HTTP Interceptor для отдачи моковых ответов.
+Вот как это сделать.
 
 ***
 
-# 1. Node.js скрипт для генерации моков из HAR
+## Исправленный Node.js скрипт (extract-mocks.js)
 
-Создайте файл `extract-mocks.js` в корне проекта рядом с HAR:
+Добавляем функцию для извлечения только пути и query из URL:
 
 ```javascript
-const fs = require('fs');
-const path = require('path');
-
-const harFile = 'network.har';   // Путь к HAR файлу
-const outputDir = path.resolve(__dirname, 'src/assets/mocks');
-
-if (!fs.existsSync(outputDir)) {
-  fs.mkdirSync(outputDir, { recursive: true });
-}
-
-const har = JSON.parse(fs.readFileSync(harFile, 'utf-8'));
-const entries = har.log.entries;
-
-function hashCode(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = Math.imul(31, hash) + str.charCodeAt(i) | 0;
-  }
-  return Math.abs(hash).toString();
-}
-
-const mocks = new Map();
+const url = require('url');
 
 entries.forEach(entry => {
-  const { method, url, postData } = entry.request;
-  let key = `${method}_${url}`.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  const { method, url: fullUrl, postData } = entry.request;
+
+  // Разбираем URL, берем только pathname + search
+  const parsedUrl = url.parse(fullUrl);
+  const pathAndQuery = parsedUrl.pathname + (parsedUrl.search || '');
+
+  let key = `${method}_${pathAndQuery}`.replace(/[^a-z0-9]/gi, '_').toLowerCase();
 
   if (method === 'POST' && postData && postData.text) {
     const bodyHash = hashCode(postData.text);
@@ -45,7 +28,7 @@ entries.forEach(entry => {
   if (!mocks.has(key)) {
     mocks.set(key, {
       method,
-      url,
+      url: fullUrl,
       status: entry.response.status,
       headers: entry.response.headers,
       responseBody: entry.response.content.text || '',
@@ -53,128 +36,61 @@ entries.forEach(entry => {
     });
   }
 });
-
-mocks.forEach((value, key) => {
-  fs.writeFileSync(path.join(outputDir, `${key}.json`), JSON.stringify(value, null, 2));
-});
-
-console.log(`Exported ${mocks.size} mock(s) to ${outputDir}`);
 ```
-
-Запустите скрипт командой:
-
-```bash
-node extract-mocks.js
-```
-
-В папке `src/assets/mocks` появятся JSON-файлы с отдельно подготовленными моками, уникальными по сочетанию метода + URL + (для POST) телу запроса.
 
 ***
 
-# 2. Angular HTTP Interceptor для отдачи моков
+## Исправленный Angular MockInterceptor
 
-Создайте файл `mock.interceptor.ts` в вашем Angular проекте:
+В Interceptor при формировании ключа делаем тоже самое — извлекаем только path + query из URL:
 
 ```typescript
-import { Injectable } from '@angular/core';
-import {
-  HttpInterceptor,
-  HttpRequest,
-  HttpHandler,
-  HttpEvent,
-  HttpResponse
-} from '@angular/common/http';
-import { Observable, from, of } from 'rxjs';
-import { switchMap, delay, catchError } from 'rxjs/operators';
-
-@Injectable()
-export class MockInterceptor implements HttpInterceptor {
-  private async loadMock(req: HttpRequest<any>): Promise<HttpResponse<any> | null> {
-    try {
-      const method = req.method;
-      let key = `${method}_${req.urlWithParams}`.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-
-      if (method === 'POST' && req.body) {
-        const bodyString = JSON.stringify(req.body);
-        const hash = this.hashCode(bodyString);
-        key += `_${hash}`;
-      }
-
-      // Загружаем файл моков из assets
-      const response = await fetch(`/assets/mocks/${key}.json`);
-      if (!response.ok) {
-        return null;
-      }
-      const mockData = await response.json();
-
-      // Формируем HttpResponse с моковыми данными
-      const body = mockData.responseBody ? JSON.parse(mockData.responseBody) : null;
-
-      return new HttpResponse({
-        status: mockData.status,
-        body,
-        headers: mockData.headers
-      });
-    } catch {
-      return null;
-    }
+private getPathAndQuery(url: string): string {
+  try {
+    const parsedUrl = new URL(url);
+    return parsedUrl.pathname + (parsedUrl.search || '');
+  } catch {
+    return url; // fallback
   }
+}
 
-  private hashCode(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      hash = Math.imul(31, hash) + str.charCodeAt(i) | 0;
+private async loadMock(req: HttpRequest<any>): Promise<HttpResponse<any> | null> {
+  try {
+    const method = req.method;
+    const pathAndQuery = this.getPathAndQuery(req.urlWithParams);
+    let key = `${method}_${pathAndQuery}`.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+
+    if (method === 'POST' && req.body) {
+      const bodyString = JSON.stringify(req.body);
+      const hash = this.hashCode(bodyString);
+      key += `_${hash}`;
     }
-    return Math.abs(hash).toString();
-  }
 
-  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
-    return from(this.loadMock(req)).pipe(
-      switchMap(mockResponse => {
-        if (mockResponse) {
-          // Создаем искусственную задержку для реалистичности
-          return of(mockResponse).pipe(delay(300));
-        }
-        return next.handle(req);
-      }),
-      catchError(() => next.handle(req))
-    );
+    const response = await fetch(`/assets/mocks/${key}.json`);
+    if (!response.ok) return null;
+
+    const mockData = await response.json();
+    const body = mockData.responseBody ? JSON.parse(mockData.responseBody) : null;
+
+    return new HttpResponse({
+      status: mockData.status,
+      body,
+      headers: mockData.headers
+    });
+  } catch {
+    return null;
   }
 }
 ```
 
 ***
 
-# 3. Регистрация Interceptor в AppModule
+## Итог
 
-В `app.module.ts` добавьте:
+- В генерации моков и в interceptor ключ строится из метода + пути + query без домена
+- Для POST добавляется хеш тела запроса, чтобы отличать разные payload
+- Это обеспечит стабильность mocks, даже если меняется домен или протокол API
 
-```typescript
-import { HTTP_INTERCEPTORS } from '@angular/common/http';
-import { MockInterceptor } from './mock.interceptor';
-
-@NgModule({
-  providers: [
-    {
-      provide: HTTP_INTERCEPTORS,
-      useClass: MockInterceptor,
-      multi: true
-    }
-  ]
-})
-export class AppModule {}
-```
-
-***
-
-# Объяснения
-
-- HAR скрипт создаст уникальные ключи для GET и POST (учитывая тело POST).
-- JSON файлы моков попадают в `src/assets/mocks` и автоматически доступны как часть сборки Angular.
-- Interceptor по ключу (метод + URL + хеш тела) пытается загрузить локальный мок из assets.
-- Если мок найден — вернётся моковый ответ, иначе запрос пройдет к живому API.
-- При этом можно спокойно обрабатывать большое количество уникальных POST-запросов с разными телами.
-
-Если нужны подробности или помощь с конкретными частями, спрашивайте!
+Если потребуется, могу помочь с готовой правкой полного кода.
 
 Источники
