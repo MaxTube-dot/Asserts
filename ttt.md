@@ -1,68 +1,79 @@
-Самый простой и лёгкий путь для вашей задачи — использовать Node.js скрипт для чтения HAR, фильтрации и экспорта необходимых запросов в отдельные JSON файлы, а затем на стороне Angular сделать HTTP Interceptor, который будет подставлять моковые ответы, считывая их из этих файлов.
+Вот полный пример, который демонстрирует:
+
+1. Как из HAR экспортировать моки (GET и POST запросы с учётом тела для POST).
+2. Как эти моки использовать в Angular HTTP Interceptor для отдачи моковых ответов.
 
 ***
 
-## Пример простой реализации
+# 1. Node.js скрипт для генерации моков из HAR
 
-### 1. Node.js скрипт для экспорта из HAR
-
-Создаём файл `extract-mocks.js` рядом с HAR файлом:
+Создайте файл `extract-mocks.js` в корне проекта рядом с HAR:
 
 ```javascript
 const fs = require('fs');
 const path = require('path');
 
-const harFile = 'network.har'; // ваш исходный HAR файл с запросами
-const outputDir = path.resolve(__dirname, 'mocks');
+const harFile = 'network.har';   // Путь к HAR файлу
+const outputDir = path.resolve(__dirname, 'src/assets/mocks');
 
 if (!fs.existsSync(outputDir)) {
-  fs.mkdirSync(outputDir);
+  fs.mkdirSync(outputDir, { recursive: true });
 }
 
 const har = JSON.parse(fs.readFileSync(harFile, 'utf-8'));
 const entries = har.log.entries;
 
-const uniqueRequests = new Map();
+function hashCode(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = Math.imul(31, hash) + str.charCodeAt(i) | 0;
+  }
+  return Math.abs(hash).toString();
+}
+
+const mocks = new Map();
 
 entries.forEach(entry => {
-  const { method, url } = entry.request;
-  // Ключ по методу и URL
-  const key = `${method}_${url}`.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  const { method, url, postData } = entry.request;
+  let key = `${method}_${url}`.replace(/[^a-z0-9]/gi, '_').toLowerCase();
 
-  if (!uniqueRequests.has(key)) {
-    uniqueRequests.set(key, {
-      url,
+  if (method === 'POST' && postData && postData.text) {
+    const bodyHash = hashCode(postData.text);
+    key += `_${bodyHash}`;
+  }
+
+  if (!mocks.has(key)) {
+    mocks.set(key, {
       method,
+      url,
       status: entry.response.status,
-      response: entry.response.content.text || '',
-      headers: entry.response.headers
+      headers: entry.response.headers,
+      responseBody: entry.response.content.text || '',
+      requestBody: postData ? postData.text : null
     });
   }
 });
 
-uniqueRequests.forEach((value, key) => {
-  fs.writeFileSync(
-    path.join(outputDir, `${key}.json`),
-    JSON.stringify(value, null, 2)
-  );
+mocks.forEach((value, key) => {
+  fs.writeFileSync(path.join(outputDir, `${key}.json`), JSON.stringify(value, null, 2));
 });
 
-console.log(`Exported ${uniqueRequests.size} mocks to ${outputDir}`);
+console.log(`Exported ${mocks.size} mock(s) to ${outputDir}`);
 ```
 
-Запускаем командой:
+Запустите скрипт командой:
 
 ```bash
 node extract-mocks.js
 ```
 
-В итоге вы получите папку `mocks/` с JSON-файлами на каждый уникальный запрос.
+В папке `src/assets/mocks` появятся JSON-файлы с отдельно подготовленными моками, уникальными по сочетанию метода + URL + (для POST) телу запроса.
 
 ***
 
-### 2. Angular HTTP Interceptor, использующий эти файлы
+# 2. Angular HTTP Interceptor для отдачи моков
 
-Предполагается, что моки помещены в папку `src/assets/mocks` и доступны клиенту.
+Создайте файл `mock.interceptor.ts` в вашем Angular проекте:
 
 ```typescript
 import { Injectable } from '@angular/core';
@@ -70,44 +81,73 @@ import {
   HttpInterceptor,
   HttpRequest,
   HttpHandler,
-  HttpResponse,
-  HttpEvent
+  HttpEvent,
+  HttpResponse
 } from '@angular/common/http';
-import { Observable, of } from 'rxjs';
-import { delay, switchMap } from 'rxjs/operators';
+import { Observable, from, of } from 'rxjs';
+import { switchMap, delay, catchError } from 'rxjs/operators';
 
 @Injectable()
 export class MockInterceptor implements HttpInterceptor {
-  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
-    // Формируем имя файла mock по запросу
-    const key = `${req.method}_${req.urlWithParams}`.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-    const mockUrl = `/assets/mocks/${key}.json`;
+  private async loadMock(req: HttpRequest<any>): Promise<HttpResponse<any> | null> {
+    try {
+      const method = req.method;
+      let key = `${method}_${req.urlWithParams}`.replace(/[^a-z0-9]/gi, '_').toLowerCase();
 
-    return fetch(mockUrl).then(res => {
-      if (res.ok) {
-        return res.json();
+      if (method === 'POST' && req.body) {
+        const bodyString = JSON.stringify(req.body);
+        const hash = this.hashCode(bodyString);
+        key += `_${hash}`;
       }
-      throw new Error('Mock file not found');
-    })
-    .then(mockData => {
-      return of(new HttpResponse({
+
+      // Загружаем файл моков из assets
+      const response = await fetch(`/assets/mocks/${key}.json`);
+      if (!response.ok) {
+        return null;
+      }
+      const mockData = await response.json();
+
+      // Формируем HttpResponse с моковыми данными
+      const body = mockData.responseBody ? JSON.parse(mockData.responseBody) : null;
+
+      return new HttpResponse({
         status: mockData.status,
-        body: JSON.parse(mockData.response || '{}')
-      })).pipe(delay(500)); // Имитация задержки сети
-    })
-    .catch(() => {
-      // Если мока нет, просто пропускаем запрос дальше
-      return next.handle(req);
-    }) as unknown as Observable<HttpEvent<any>>;
+        body,
+        headers: mockData.headers
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  private hashCode(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = Math.imul(31, hash) + str.charCodeAt(i) | 0;
+    }
+    return Math.abs(hash).toString();
+  }
+
+  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
+    return from(this.loadMock(req)).pipe(
+      switchMap(mockResponse => {
+        if (mockResponse) {
+          // Создаем искусственную задержку для реалистичности
+          return of(mockResponse).pipe(delay(300));
+        }
+        return next.handle(req);
+      }),
+      catchError(() => next.handle(req))
+    );
   }
 }
 ```
 
 ***
 
-### Простое добавление в Angular
+# 3. Регистрация Interceptor в AppModule
 
-В `app.module.ts`:
+В `app.module.ts` добавьте:
 
 ```typescript
 import { HTTP_INTERCEPTORS } from '@angular/common/http';
@@ -127,20 +167,14 @@ export class AppModule {}
 
 ***
 
-## Итог
+# Объяснения
 
-- HAR экспортируете привычным инструментом браузера
-- Запускаете `extract-mocks.js` для автоматического разделения HAR по отдельным mock JSON
-- Копируете `mocks/` в `src/assets/mocks`
-- Запускаете Angular с MockInterceptor, который отдаёт моковые ответы из файлов
+- HAR скрипт создаст уникальные ключи для GET и POST (учитывая тело POST).
+- JSON файлы моков попадают в `src/assets/mocks` и автоматически доступны как часть сборки Angular.
+- Interceptor по ключу (метод + URL + хеш тела) пытается загрузить локальный мок из assets.
+- Если мок найден — вернётся моковый ответ, иначе запрос пройдет к живому API.
+- При этом можно спокойно обрабатывать большое количество уникальных POST-запросов с разными телами.
 
-Этот способ:
-
-- Максимально прост в реализации
-- Не требует backend-сервера
-- Легко расширяется добавлением новых запросов
-- Поддерживает любые нестандартные ответные данные и логику в HAR
-
-Если нужно, могу помочь с расширенным примером или уточнениями по интеграции.
+Если нужны подробности или помощь с конкретными частями, спрашивайте!
 
 Источники
