@@ -1,34 +1,24 @@
-using System.Net.Http;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Http.Resilience;
+using Microsoft.Extensions.Logging;
 using Polly;
-using Polly.Retry;
-using Refit;
 
-public static class SessionClientRegistration
+namespace YourNamespace.Http;
+
+public static class SessionResponseEndedRetryHandler
 {
-    public static IServiceCollection AddSessionClient(this IServiceCollection services)
+    public static IHttpClientBuilder AddSessionResponseEndedRetry(
+        this IHttpClientBuilder builder)
     {
-        var refitSettings = new RefitSettings
-        {
-            ContentSerializer = Json.ContentSerializer,
-            ExceptionFactory = CustomRefitExceptionFactory
-        };
+        builder.AddResilienceHandler(
+            "session-response-ended-retry",
+            static (pipelineBuilder, context) =>
+            {
+                var loggerFactory =
+                    context.ServiceProvider.GetRequiredService<ILoggerFactory>();
 
-        services
-            .AddRefitClient<ISessionApi>(refitSettings)
-            .ConfigureHttpClient((sp, c) =>
-            {
-                var options = sp.GetRequiredService<IOptions<SessionClientOptions>>().Value;
-                c.BaseAddress = new Uri(options.Endpoint);
-                c.Timeout = TimeSpan.FromSeconds(options.Timeout);
-            })
-            .AddResilienceHandler("session-response-ended-retry", static (pipelineBuilder, context) =>
-            {
-                var loggerFactory = context.ServiceProvider.GetRequiredService<ILoggerFactory>();
-                var logger = loggerFactory.CreateLogger("SessionApiRetry");
+                var logger =
+                    loggerFactory.CreateLogger("SessionApiRetry");
 
                 var retryOptions = new HttpRetryStrategyOptions
                 {
@@ -44,7 +34,7 @@ public static class SessionClientRegistration
                     OnRetry = args =>
                     {
                         logger.LogWarning(
-                            "Retry #{Attempt} for session API because of ResponseEnded. Next delay: {DelayMs} ms",
+                            "Retry #{Attempt} because of ResponseEnded. Next delay: {DelayMs} ms",
                             args.AttemptNumber + 1,
                             args.RetryDelay.TotalMilliseconds);
 
@@ -53,16 +43,8 @@ public static class SessionClientRegistration
                 };
 
                 pipelineBuilder.AddRetry(retryOptions);
-            })
-            .UseTinkoffHttpClientMetrics()
-            .UseTcHttpLogging();
+            });
 
-        services.AddClient<ISessionClient, SessionClient, ISessionApi>();
-
-        return services;
+        return builder;
     }
-
-    // Заглушки для примера
-    private static Task<Exception?> CustomRefitExceptionFactory(HttpResponseMessage response)
-        => Task.FromResult<Exception?>(null);
 }
